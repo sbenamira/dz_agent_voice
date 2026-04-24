@@ -3,8 +3,6 @@ process.env.TWILIO_ACCOUNT_SID = 'test';
 process.env.TWILIO_AUTH_TOKEN = 'test';
 process.env.TWILIO_PHONE_NUMBER = '+1234567890';
 process.env.DEEPGRAM_API_KEY = 'test';
-process.env.ELEVENLABS_API_KEY = 'test';
-process.env.ELEVENLABS_VOICE_ID = 'testVoiceId';
 process.env.OPENAI_API_KEY = 'test';
 process.env.SUPABASE_URL = 'https://test.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test';
@@ -17,7 +15,26 @@ jest.mock('../src/utils/audio', () => ({
   mp3ToMulaw: jest.fn().mockResolvedValue(mockMulawBuffer)
 }));
 
-const mockMp3 = Buffer.from('mp3data');
+const { Readable } = require('stream');
+
+function makeMockStream(data) {
+  const s = new Readable({ read() {} });
+  process.nextTick(() => { s.push(data); s.push(null); });
+  return s;
+}
+
+const mockSetMetadata = jest.fn().mockResolvedValue(undefined);
+const mockToStream = jest.fn().mockImplementation(() =>
+  Promise.resolve({ audioStream: makeMockStream(Buffer.from('mp3data')) })
+);
+
+jest.mock('msedge-tts', () => ({
+  MsEdgeTTS: jest.fn().mockImplementation(() => ({
+    setMetadata: mockSetMetadata,
+    toStream: mockToStream
+  })),
+  OUTPUT_FORMAT: { AUDIO_24KHZ_48KBITRATE_MONO_MP3: 'audio-24khz-48kbitrate-mono-mp3' }
+}));
 
 const { synthesize, clearCache } = require('../src/services/tts');
 
@@ -25,10 +42,10 @@ describe('tts service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     clearCache();
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: jest.fn().mockResolvedValue(mockMp3.buffer)
-    });
+    mockSetMetadata.mockResolvedValue(undefined);
+    mockToStream.mockImplementation(() =>
+      Promise.resolve({ audioStream: makeMockStream(Buffer.from('mp3data')) })
+    );
   });
 
   it('retourne un Buffer mulaw pour du texte', async () => {
@@ -37,32 +54,29 @@ describe('tts service', () => {
     expect(result).toEqual(mockMulawBuffer);
   });
 
-  it('appelle l\'API ElevenLabs avec le bon voiceId', async () => {
+  it('appelle Edge TTS avec la voix ar-DZ-IsmaelNeural', async () => {
     await synthesize('Bonjour');
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('testVoiceId'),
-      expect.objectContaining({ method: 'POST' })
+    expect(mockSetMetadata).toHaveBeenCalledWith(
+      'ar-DZ-IsmaelNeural',
+      expect.any(String)
     );
+    expect(mockToStream).toHaveBeenCalledWith('Bonjour');
   });
 
   it('utilise le cache pour le même texte', async () => {
     await synthesize('texte test');
     await synthesize('texte test');
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(mockToStream).toHaveBeenCalledTimes(1);
   });
 
   it('retourne Buffer vide pour texte vide', async () => {
     const result = await synthesize('');
     expect(result.length).toBe(0);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockToStream).not.toHaveBeenCalled();
   });
 
-  it('lève une erreur si ElevenLabs retourne 4xx', async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-      text: jest.fn().mockResolvedValue('Unauthorized')
-    });
-    await expect(synthesize('test erreur')).rejects.toThrow('401');
+  it('lève une erreur si Edge TTS échoue', async () => {
+    mockToStream.mockRejectedValueOnce(new Error('Edge TTS connexion refusée'));
+    await expect(synthesize('test erreur')).rejects.toThrow('Edge TTS connexion refusée');
   });
 });

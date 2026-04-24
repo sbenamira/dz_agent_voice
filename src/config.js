@@ -8,8 +8,6 @@ const REQUIRED_KEYS = [
   'TWILIO_AUTH_TOKEN',
   'TWILIO_PHONE_NUMBER',
   'DEEPGRAM_API_KEY',
-  'ELEVENLABS_API_KEY',
-  'ELEVENLABS_VOICE_ID',
   'OPENAI_API_KEY',
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY'
@@ -37,11 +35,6 @@ module.exports = {
   },
   deepgram: {
     apiKey: process.env.DEEPGRAM_API_KEY
-  },
-  elevenlabs: {
-    apiKey: process.env.ELEVENLABS_API_KEY,
-    voiceId: process.env.ELEVENLABS_VOICE_ID,
-    model: 'eleven_turbo_v2'
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY,
