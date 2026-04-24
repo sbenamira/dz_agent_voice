@@ -48,7 +48,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Test — Appeler Karim</title>
-  <script src="https://sdk.twilio.com/js/client/v1.14/twilio.js"></script>
+  <script src="https://unpkg.com/@twilio/voice-sdk@2/dist/twilio.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -156,54 +156,51 @@ const HTML_PAGE = `<!DOCTYPE html>
 
   <script>
     var device = null;
-    var activeConn = null;
+    var activeCall = null;
 
     function ui(state, text) {
       var btn = document.getElementById('btn');
       var dot = document.getElementById('dot');
       var label = document.getElementById('status-text');
-
       dot.className = 'dot' + (state === 'live' ? ' live' : state === 'ring' ? ' ring' : state === 'error' ? ' error' : '');
       label.className = (state === 'live' ? 'live' : state === 'error' ? 'error' : state === 'ring' ? 'ring' : '');
       label.textContent = text;
-
       btn.className = state === 'ring' ? 'ringing' : state === 'live' ? 'connected' : '';
       btn.innerHTML = state === 'live' ? '📵' : '📞';
       btn.disabled = (state === 'init');
     }
 
-    function getDevice(cb) {
+    async function toggleCall() {
+      if (activeCall) { activeCall.disconnect(); return; }
+
       ui('init', 'Initialisation...');
-      fetch('/token', { method: 'POST' })
-        .then(function(res) { return res.json().then(function(d) { return { ok: res.ok, data: d }; }); })
-        .then(function(r) {
-          if (!r.ok) { ui('error', r.data.error || 'Erreur token'); return cb(null); }
+      try {
+        var res = await fetch('/token', { method: 'POST' });
+        var data = await res.json();
+        if (!res.ok) { ui('error', data.error || 'Erreur token'); return; }
 
-          var d = new Twilio.Device(r.data.token, { debug: false });
-          d.on('ready',      function() { ui('idle', 'Prêt'); });
-          d.on('connect',    function() { ui('live', 'Connecté'); });
-          d.on('disconnect', function() { activeConn = null; ui('idle', 'Déconnecté'); });
-          d.on('error',      function(e) { ui('error', e.message || 'Erreur Twilio'); });
-          cb(d);
-        })
-        .catch(function() { ui('error', 'Réseau indisponible'); cb(null); });
-    }
+        device = new Twilio.Device(data.token, { logLevel: 'error' });
+        device.on('error', function(err) { ui('error', err.message || 'Erreur Twilio'); });
 
-    function toggleCall() {
-      if (activeConn) { activeConn.disconnect(); return; }
+        await device.register();
+        ui('ring', 'Appel en cours...');
 
-      if (!device) {
-        getDevice(function(d) {
-          if (!d) return;
-          device = d;
-          ui('ring', 'Appel en cours...');
-          activeConn = device.connect();
+        activeCall = await device.connect();
+        activeCall.on('ringing',    function() { ui('ring', 'Sonnerie...'); });
+        activeCall.on('accept',     function() { ui('live', 'Connecté'); });
+        activeCall.on('disconnect', function() {
+          activeCall = null;
+          ui('idle', 'Déconnecté');
+          document.getElementById('btn').disabled = false;
         });
-        return;
+        activeCall.on('error', function(e) {
+          ui('error', e.message || 'Erreur appel');
+          activeCall = null;
+          document.getElementById('btn').disabled = false;
+        });
+      } catch (e) {
+        ui('error', e.message || 'Erreur');
       }
-
-      ui('ring', 'Appel en cours...');
-      activeConn = device.connect();
     }
   </script>
 </body>
