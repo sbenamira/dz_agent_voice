@@ -21,6 +21,9 @@ app.use('/outbound', outboundRouter);
 // API REST CRUD (workspaces, subjects, campaigns, contacts, stats)
 app.use('/api', require('./routes/api'));
 
+// Page de test navigateur + endpoint token Twilio Client JS
+app.use('/', require('./routes/testcall'));
+
 app.use((req, res) => {
   res.status(404).json({ error: 'Route non trouvée' });
 });
