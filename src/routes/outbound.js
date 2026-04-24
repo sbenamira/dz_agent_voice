@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 const db = require('../services/database');
 const campaign = require('../services/campaign');
 const { parseContactsExcel, validatePhoneNumber } = require('../utils/excel');
+const { initiateCall, getCallStatus } = require('../services/telephony');
 
 const router = express.Router();
 
@@ -71,6 +72,39 @@ router.post('/upload', upload.single('contacts'), async (req, res) => {
     res.json({ success: true, campaignId, imported: valid.length, skipped });
   } catch (err) {
     logger.error('POST /outbound/upload', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /outbound/call — Lance un appel unique vers un numéro donné (test ad hoc)
+router.post('/call', async (req, res) => {
+  try {
+    const { telephone, nom } = req.body;
+    if (!telephone) return res.status(400).json({ error: 'telephone requis' });
+    if (!validatePhoneNumber(telephone)) {
+      return res.status(400).json({ error: 'Numéro invalide — format E.164 requis, ex: +21361234567' });
+    }
+
+    const baseUrl = config.server.baseUrl || `https://${req.headers.host}`;
+    const webhookUrl = `${baseUrl}/inbound`;
+
+    const call = await initiateCall(telephone, webhookUrl);
+
+    logger.info('Appel ad hoc initié', { telephone, nom: nom || '—', callSid: call.sid });
+    res.json({ success: true, callSid: call.sid, status: call.status });
+  } catch (err) {
+    logger.error('POST /outbound/call', { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /outbound/status/:callSid — Statut Twilio en temps réel
+router.get('/status/:callSid', async (req, res) => {
+  try {
+    const status = await getCallStatus(req.params.callSid);
+    res.json({ callSid: req.params.callSid, status });
+  } catch (err) {
+    logger.error('GET /outbound/status', { error: err.message });
     res.status(500).json({ error: err.message });
   }
 });

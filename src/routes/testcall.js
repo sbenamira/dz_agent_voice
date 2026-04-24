@@ -209,4 +209,206 @@ const HTML_PAGE = `<!DOCTYPE html>
 </body>
 </html>`;
 
+router.get('/test-outbound', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(HTML_OUTBOUND);
+});
+
+const HTML_OUTBOUND = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test — Appel Sortant</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #000;
+      color: #fff;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .card {
+      background: #0d0d0d;
+      border: 1px solid #1e1e1e;
+      border-radius: 20px;
+      padding: 48px 40px;
+      width: 340px;
+    }
+
+    h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }
+    .sub { color: #555; font-size: 0.8rem; margin-bottom: 32px; }
+
+    label { display: block; font-size: 0.75rem; color: #888; margin-bottom: 6px; }
+
+    input {
+      width: 100%;
+      background: #141414;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 12px 14px;
+      color: #fff;
+      font-size: 0.9rem;
+      margin-bottom: 18px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus { border-color: #ff6600; }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      background: #ff6600;
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      margin-top: 4px;
+    }
+    button:hover:not(:disabled) { background: #e05a00; }
+    button:disabled { background: #333; cursor: not-allowed; }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 22px;
+      font-size: 0.8rem;
+      color: #666;
+      min-height: 22px;
+    }
+
+    .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #333;
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    .dot.calling { background: #ff6600; animation: blink 0.8s step-end infinite; }
+    .dot.live    { background: #00cc66; }
+    .dot.done    { background: #555; }
+    .dot.error   { background: #cc2200; }
+
+    @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.2; } }
+
+    #status-text.calling { color: #ff6600; }
+    #status-text.live    { color: #00cc66; }
+    #status-text.error   { color: #cc4444; }
+
+    .call-sid { margin-top: 14px; font-size: 0.68rem; color: #333; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Appel Sortant</h1>
+    <p class="sub">Pipeline STT → Claude → TTS</p>
+
+    <form id="form">
+      <label for="tel">Numéro de téléphone</label>
+      <input id="tel" type="tel" placeholder="+21361234567" autocomplete="off" required>
+
+      <label for="nom">Nom du contact</label>
+      <input id="nom" type="text" placeholder="Mohamed" autocomplete="off">
+
+      <button id="btn" type="submit">📞 Appeler maintenant</button>
+    </form>
+
+    <div class="status-row">
+      <span class="dot" id="dot"></span>
+      <span id="status-text">Prêt</span>
+    </div>
+
+    <p class="call-sid" id="call-sid"></p>
+  </div>
+
+  <script>
+    var pollTimer = null;
+
+    var STATUS_MAP = {
+      'queued':      { cls: 'calling', text: 'En file d\\'attente...' },
+      'ringing':     { cls: 'calling', text: 'Sonnerie...' },
+      'in-progress': { cls: 'live',    text: 'Appel en cours' },
+      'completed':   { cls: 'done',    text: 'Appel terminé' },
+      'busy':        { cls: 'error',   text: 'Occupé' },
+      'failed':      { cls: 'error',   text: 'Échec' },
+      'no-answer':   { cls: 'error',   text: 'Pas de réponse' },
+      'canceled':    { cls: 'done',    text: 'Annulé' }
+    };
+    var TERMINAL = ['completed','busy','failed','no-answer','canceled'];
+
+    function ui(dotCls, text) {
+      var dot = document.getElementById('dot');
+      var label = document.getElementById('status-text');
+      dot.className = 'dot' + (dotCls ? ' ' + dotCls : '');
+      label.className = dotCls || '';
+      label.textContent = text;
+    }
+
+    function stopPoll() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function pollStatus(callSid) {
+      pollTimer = setInterval(function() {
+        fetch('/outbound/status/' + callSid)
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            var s = STATUS_MAP[d.status] || { cls: 'calling', text: d.status };
+            ui(s.cls, s.text);
+            if (TERMINAL.indexOf(d.status) !== -1) {
+              stopPoll();
+              document.getElementById('btn').disabled = false;
+            }
+          })
+          .catch(function() {});
+      }, 2000);
+    }
+
+    document.getElementById('form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      stopPoll();
+
+      var tel = document.getElementById('tel').value.trim();
+      var nom = document.getElementById('nom').value.trim();
+
+      document.getElementById('btn').disabled = true;
+      document.getElementById('call-sid').textContent = '';
+      ui('calling', 'Lancement...');
+
+      fetch('/outbound/call', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ telephone: tel, nom: nom })
+      })
+      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(r) {
+        if (!r.ok) {
+          ui('error', r.data.error || 'Erreur');
+          document.getElementById('btn').disabled = false;
+          return;
+        }
+        var callSid = r.data.callSid;
+        document.getElementById('call-sid').textContent = 'SID: ' + callSid;
+        var s = STATUS_MAP[r.data.status] || { cls: 'calling', text: r.data.status || 'En cours...' };
+        ui(s.cls, s.text);
+        pollStatus(callSid);
+      })
+      .catch(function() {
+        ui('error', 'Réseau indisponible');
+        document.getElementById('btn').disabled = false;
+      });
+    });
+  </script>
+</body>
+</html>`;
+
 module.exports = router;
