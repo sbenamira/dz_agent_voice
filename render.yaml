@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: dz-agent-vocal
+    env: node
+    buildCommand: apt-get install -y ffmpeg && npm install
+    startCommand: node src/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: PORT
+        value: "3000"
+      - key: BASE_URL
+        sync: false
+      - key: MAX_CONCURRENT_CALLS
+        value: "10"
+      - key: CALL_DELAY_MS
+        value: "2000"
