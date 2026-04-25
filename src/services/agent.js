@@ -32,20 +32,22 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], on
       ragContext = await rag.searchContext(subjectId, userMessage);
     }
 
-    const systemPrompt = selectPrompt(userMessage) +
+    const REMINDER = '\n\nIMPORTANT: Si tu ne sais pas quoi dire, réponds UNIQUEMENT: "واش تحب؟" Jamais de mot inventé. Jamais d\'arabe standard.';
+    const systemPrompt = selectPrompt(userMessage) + REMINDER +
       (ragContext ? `\n\n## CONTEXTE DISPONIBLE\n${ragContext}` : '');
 
     const messages = [
       { role: 'system', content: systemPrompt },
-      ...history.map(h => ({ role: h.role, content: h.content })),
+      ...history.slice(-6).map(h => ({ role: h.role, content: h.content })),
       { role: 'user', content: userMessage }
     ];
 
     const stream = await groq.chat.completions.create({
       model: config.groq.model,
       messages,
-      max_tokens: 60,
-      temperature: 0.7,
+      max_tokens: 120,
+      temperature: 0.3,
+      stop: ['.', '؟', '!', '،\n'],
       stream: true
     });
 
