@@ -8,14 +8,12 @@ function createDeepgramSession(onTranscript, onError) {
 
   const connection = deepgram.listen.live({
     model: 'nova-2',
-    language: 'ar',
+    language: 'multi',   // multilingual : supporte darija (arabe + français mixte)
     encoding: 'mulaw',
     sample_rate: 8000,
     channels: 1,
     endpointing: 300,
-    interim_results: false,
-    punctuate: true,
-    smart_format: true
+    interim_results: false
   });
 
   // Enregistrer l'handler d'erreur avant Open pour éviter ERR_UNHANDLED_ERROR si Deepgram échoue avant l'ouverture
