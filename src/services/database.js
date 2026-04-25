@@ -287,6 +287,88 @@ async function getTranscripts(call_id) {
   }
 }
 
+// ── Monitoring ────────────────────────────────────────────────────────────────
+
+async function insertCallTurn(data) {
+  try {
+    const { data: row, error } = await supabase
+      .from('call_turns').insert(data).select().single();
+    if (error) throw error;
+    return row;
+  } catch (err) {
+    logger.error('insertCallTurn', { error: err.message });
+    throw err;
+  }
+}
+
+async function updateCallMonitoring(id, updates) {
+  try {
+    const { data, error } = await supabase
+      .from('calls').update(updates).eq('id', id).select().single();
+    if (error) throw error;
+    return data;
+  } catch (err) {
+    logger.error('updateCallMonitoring', { error: err.message });
+    throw err;
+  }
+}
+
+async function getCallsMonitoring(limit = 50) {
+  try {
+    const { data, error } = await supabase
+      .from('calls')
+      .select('id, created_at, caller_number, statut, duree_secondes, turns, avg_llm_ms, avg_tts_ms, avg_total_ms')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data || [];
+  } catch (err) {
+    logger.error('getCallsMonitoring', { error: err.message });
+    throw err;
+  }
+}
+
+async function getCallDetail(id) {
+  try {
+    const [{ data: call, error: callErr }, { data: turns, error: turnsErr }] = await Promise.all([
+      supabase.from('calls').select('*').eq('id', id).single(),
+      supabase.from('call_turns').select('*').eq('call_id', id).order('turn_number', { ascending: true })
+    ]);
+    if (callErr) throw callErr;
+    if (turnsErr) logger.warn('getCallDetail turns', { error: turnsErr.message });
+    return { ...call, turns_detail: turns || [] };
+  } catch (err) {
+    logger.error('getCallDetail', { error: err.message });
+    throw err;
+  }
+}
+
+async function getMonitoringStats() {
+  try {
+    const { data, error } = await supabase
+      .from('calls')
+      .select('avg_llm_ms, avg_tts_ms, avg_total_ms, statut, created_at')
+      .order('created_at', { ascending: false })
+      .limit(100);
+    if (error) throw error;
+    const rows = data || [];
+    const valid = rows.filter(c => c.avg_total_ms);
+    const avg = key => valid.length
+      ? Math.round(valid.reduce((s, c) => s + (c[key] || 0), 0) / valid.length) : 0;
+    const today = new Date().toISOString().slice(0, 10);
+    return {
+      avg_llm_ms: avg('avg_llm_ms'),
+      avg_tts_ms: avg('avg_tts_ms'),
+      avg_total_ms: avg('avg_total_ms'),
+      calls_today: rows.filter(c => c.created_at?.startsWith(today)).length,
+      total_calls: rows.length
+    };
+  } catch (err) {
+    logger.error('getMonitoringStats', { error: err.message });
+    throw err;
+  }
+}
+
 module.exports = {
   createWorkspace, getWorkspace, listWorkspaces,
   createSubject, getSubject, listSubjects, updateSubject,
@@ -295,5 +377,6 @@ module.exports = {
   insertContacts, getContactsByStatus, updateContactStatus,
   createCall, updateCall, getCallStats,
   insertTranscript, getTranscripts,
+  insertCallTurn, updateCallMonitoring, getCallsMonitoring, getCallDetail, getMonitoringStats,
   supabase
 };

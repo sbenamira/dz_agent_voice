@@ -125,4 +125,21 @@ router.get('/calls/:callId/transcripts', async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Monitoring Dashboard ───────────────────────────────────────────────────────
+
+router.get('/calls', async (req, res) => {
+  try { res.json(await db.getCallsMonitoring(50)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/calls/:id', async (req, res) => {
+  try { res.json(await db.getCallDetail(req.params.id)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/stats', async (req, res) => {
+  try { res.json(await db.getMonitoringStats()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 module.exports = router;

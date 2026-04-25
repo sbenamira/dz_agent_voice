@@ -7,6 +7,9 @@ const agent = require('../services/agent');
 const { createDeepgramSession } = require('../services/stt');
 const { synthesizeStream } = require('../services/tts');
 const { mulawToLinear16 } = require('../utils/audio');
+
+// Stocke le numéro appelant entre le webhook POST et le WebSocket start
+const pendingCallers = new Map();
 const { generateTwiMLStream } = require('../services/telephony');
 
 const router = express.Router();
@@ -14,6 +17,8 @@ const router = express.Router();
 // POST /inbound — webhook Twilio pour appel entrant, retourne TwiML WebSocket
 router.post('/', (req, res) => {
   const callSid = req.body.CallSid || req.query.CallSid || 'unknown';
+  const callerFrom = req.body.From || req.body.from || 'unknown';
+  pendingCallers.set(callSid, callerFrom);
   const streamUrl = `wss://${req.headers.host}/media-stream`;
   logger.info('Appel entrant reçu', { callSid });
   const twiml = generateTwiMLStream(streamUrl, callSid);
@@ -40,6 +45,11 @@ function setupMediaStream(server) {
     let conversationHistory = [];
     let isProcessing = false;
     let callLanguage = 'ar'; // darija par défaut — marché algérien
+    let turnCount = 0;
+    let callerNumber = 'unknown';
+    let llmDurations = [];
+    let ttsDurations = [];
+    let totalDurations = [];
 
     function sendAudio(mulawBuffer) {
       if (ws.readyState !== WebSocket.OPEN || !streamSid) return;
@@ -53,12 +63,16 @@ function setupMediaStream(server) {
     async function handleTranscript(transcript) {
       if (isProcessing || !transcript.trim()) return;
       isProcessing = true;
-
+      turnCount++;
+      const turnStart = Date.now();
+      let ttsDurationTurn = 0;
+      let ttsOutputBytesTurn = 0;
 
       try {
         let buffer = '';
         const spokenParts = [];
 
+        const llmStart = Date.now();
         await agent.streamResponse({
           callId,
           subjectId: null,
@@ -71,23 +85,52 @@ function setupMediaStream(server) {
               const phrase = buffer.trim();
               buffer = '';
               if (phrase) {
-                await synthesizeStream(phrase, chunk => { if (chunk.length) sendAudio(chunk); })
-                  .catch(err => logger.error('TTS chunk', { error: err.message }));
+                const t0 = Date.now();
+                await synthesizeStream(phrase, mulawChunk => {
+                  if (mulawChunk.length) { sendAudio(mulawChunk); ttsOutputBytesTurn += mulawChunk.length; }
+                }).catch(err => logger.error('TTS chunk', { error: err.message }));
+                ttsDurationTurn += Date.now() - t0;
                 spokenParts.push(phrase);
               }
             }
           }
         });
+        const llmDuration = Date.now() - llmStart;
 
         if (buffer.trim()) {
-          await synthesizeStream(buffer.trim(), chunk => { if (chunk.length) sendAudio(chunk); }).catch(() => {});
+          const t0 = Date.now();
+          await synthesizeStream(buffer.trim(), mulawChunk => {
+            if (mulawChunk.length) { sendAudio(mulawChunk); ttsOutputBytesTurn += mulawChunk.length; }
+          }).catch(() => {});
+          ttsDurationTurn += Date.now() - t0;
           spokenParts.push(buffer.trim());
         }
 
         const fullResponse = spokenParts.join(' ');
+        const totalLatency = Date.now() - turnStart;
+
         conversationHistory.push({ role: 'user', content: transcript });
         conversationHistory.push({ role: 'assistant', content: fullResponse });
         if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
+
+        llmDurations.push(llmDuration);
+        ttsDurations.push(ttsDurationTurn);
+        totalDurations.push(totalLatency);
+
+        db.insertCallTurn({
+          call_id: callId,
+          turn_number: turnCount,
+          stt_output_text: transcript,
+          llm_input_text: transcript,
+          llm_output_text: fullResponse,
+          llm_duration_ms: llmDuration,
+          tts_input_text: fullResponse,
+          tts_output_bytes: ttsOutputBytesTurn,
+          tts_duration_ms: ttsDurationTurn,
+          total_latency_ms: totalLatency
+        }).catch(err => logger.warn('insertCallTurn', { error: err.message }));
+
+        logger.info('Tour complété', { callId, turn: turnCount, llm: llmDuration + 'ms', tts: ttsDurationTurn + 'ms', total: totalLatency + 'ms' });
       } catch (err) {
         logger.error('handleTranscript', { error: err.message, callId });
       } finally {
@@ -102,6 +145,9 @@ function setupMediaStream(server) {
         if (msg.event === 'start') {
           streamSid = msg.streamSid;
           const twilioCallSid = msg.start?.callSid || msg.start?.customParameters?.callSid || 'unknown';
+
+          callerNumber = pendingCallers.get(twilioCallSid) || 'unknown';
+          pendingCallers.delete(twilioCallSid);
 
           const callRecord = await db.createCall({ campaign_id: null, contact_id: null, direction: 'inbound' });
           callId = callRecord.id;
@@ -126,8 +172,18 @@ function setupMediaStream(server) {
         if (msg.event === 'stop') {
           if (dgSession) dgSession.close();
           const dureeSecondes = Math.round((Date.now() - callStartTime) / 1000);
-          if (callId) await db.updateCall(callId, { statut: 'terminé', duree_secondes: dureeSecondes }).catch(() => {});
-          logger.info('Appel inbound terminé', { callId, dureeSecondes });
+          if (callId) {
+            await db.updateCall(callId, { statut: 'terminé', duree_secondes: dureeSecondes }).catch(() => {});
+            const avg = arr => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
+            db.updateCallMonitoring(callId, {
+              caller_number: callerNumber,
+              turns: turnCount,
+              avg_llm_ms: avg(llmDurations),
+              avg_tts_ms: avg(ttsDurations),
+              avg_total_ms: avg(totalDurations)
+            }).catch(err => logger.warn('updateCallMonitoring', { error: err.message }));
+          }
+          logger.info('Appel inbound terminé', { callId, dureeSecondes, turns: turnCount });
         }
       } catch (err) {
         logger.error('WebSocket message', { error: err.message });

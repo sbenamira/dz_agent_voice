@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DZ Agent Voice — Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+    header {
+      background: #111; border-bottom: 1px solid #1e1e1e;
+      padding: 14px 24px; display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 10;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+    .dot-live { width: 8px; height: 8px; background: #00cc66; border-radius: 50%; animation: pulse 2s infinite; flex-shrink: 0; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 24px; }
+    .stat { background: #111; border: 1px solid #1e1e1e; border-radius: 12px; padding: 18px; }
+    .stat .lbl { font-size: 0.72rem; color: #555; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.4px; }
+    .stat .val { font-size: 1.7rem; font-weight: 700; line-height: 1; }
+    .stat .unit { font-size: 0.72rem; color: #555; margin-left: 3px; }
+
+    .card { background: #111; border: 1px solid #1e1e1e; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+    .card-title { font-size: 0.72rem; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 16px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    th { text-align: left; color: #444; font-weight: 500; padding: 8px 10px; border-bottom: 1px solid #1a1a1a; font-size: 0.7rem; text-transform: uppercase; white-space: nowrap; }
+    td { padding: 10px 10px; border-bottom: 1px solid #111; white-space: nowrap; }
+    tr.row:hover td { background: #141414; cursor: pointer; }
+
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 0.68rem; font-weight: 600; }
+    .b-ok  { background: #0d2e1a; color: #00cc66; }
+    .b-run { background: #2a1f00; color: #ff9900; }
+    .b-err { background: #2e0d0d; color: #cc4444; }
+
+    .back-btn { background: none; border: 1px solid #2a2a2a; color: #666; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 0.78rem; margin-bottom: 18px; }
+    .back-btn:hover { border-color: #444; color: #ccc; }
+
+    .turn { background: #0d0d0d; border: 1px solid #1a1a1a; border-radius: 8px; padding: 14px; margin-bottom: 10px; }
+    .turn-hdr { font-size: 0.7rem; font-weight: 700; color: #444; margin-bottom: 10px; display: flex; justify-content: space-between; }
+    .step { display: flex; align-items: baseline; gap: 8px; font-size: 0.78rem; margin-bottom: 6px; }
+    .step-lbl { min-width: 36px; color: #444; font-size: 0.68rem; font-weight: 600; text-transform: uppercase; }
+    .step-txt { flex: 1; color: #bbb; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 500px; }
+    .step-ms  { color: #ff6600; font-size: 0.68rem; min-width: 55px; text-align: right; }
+    .step-err { color: #cc4444; }
+
+    .empty { color: #333; text-align: center; padding: 32px; font-size: 0.82rem; }
+    .refresh-btn { background: none; border: 1px solid #2a2a2a; color: #555; padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 0.75rem; }
+    .refresh-btn:hover { border-color: #444; color: #ccc; }
+
+    #detail { display: none; }
+    @media (max-width: 700px) {
+      .step-txt { max-width: 160px; }
+      th:nth-child(5), td:nth-child(5), th:nth-child(6), td:nth-child(6) { display: none; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1><span class="dot-live"></span> DZ Agent Voice — Monitoring</h1>
+  <button class="refresh-btn" onclick="loadAll()">&#8635; Actualiser</button>
+</header>
+
+<div class="container">
+  <div class="stats">
+    <div class="stat"><div class="lbl">Appels aujourd'hui</div><div class="val" id="s-today">—</div></div>
+    <div class="stat"><div class="lbl">Moy. LLM</div><div class="val" id="s-llm">—<span class="unit">ms</span></div></div>
+    <div class="stat"><div class="lbl">Moy. TTS</div><div class="val" id="s-tts">—<span class="unit">ms</span></div></div>
+    <div class="stat"><div class="lbl">Moy. Total</div><div class="val" id="s-total">—<span class="unit">ms</span></div></div>
+    <div class="stat"><div class="lbl">Total appels</div><div class="val" id="s-count">—</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Latences moyennes par étape (ms)</div>
+    <canvas id="chart" height="70"></canvas>
+  </div>
+
+  <div id="calls-view">
+    <div class="card">
+      <div class="card-title">Appels récents</div>
+      <div id="calls-wrap"><div class="empty">Chargement...</div></div>
+    </div>
+  </div>
+
+  <div id="detail">
+    <button class="back-btn" onclick="showList()">&#8592; Retour aux appels</button>
+    <div class="card" id="detail-info"></div>
+    <div id="turns-wrap"></div>
+  </div>
+</div>
+
+<script>
+var chartInst = null;
+
+function ms(v) { return v != null ? v + 'ms' : '—'; }
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  var d = new Date(iso);
+  return d.toLocaleDateString('fr-FR', {day:'2-digit', month:'2-digit'}) + ' ' +
+         d.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+}
+
+function badge(s) {
+  if (!s) return '<span class="badge b-err">—</span>';
+  var cls = s === 'terminé' ? 'b-ok' : s === 'en_cours' ? 'b-run' : 'b-err';
+  return '<span class="badge ' + cls + '">' + s + '</span>';
+}
+
+function loadStats() {
+  fetch('/api/stats')
+    .then(function(r) { return r.json(); })
+    .then(function(s) {
+      document.getElementById('s-today').textContent  = s.calls_today  || 0;
+      document.getElementById('s-count').textContent  = s.total_calls  || 0;
+      document.getElementById('s-llm').innerHTML   = (s.avg_llm_ms  || 0) + '<span class="unit">ms</span>';
+      document.getElementById('s-tts').innerHTML   = (s.avg_tts_ms  || 0) + '<span class="unit">ms</span>';
+      document.getElementById('s-total').innerHTML = (s.avg_total_ms || 0) + '<span class="unit">ms</span>';
+
+      if (chartInst) chartInst.destroy();
+      chartInst = new Chart(document.getElementById('chart').getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: ['LLM (Groq)', 'TTS (Edge TTS)', 'Total'],
+          datasets: [{ data: [s.avg_llm_ms||0, s.avg_tts_ms||0, s.avg_total_ms||0],
+            backgroundColor: ['#ff6600', '#0088ff', '#00cc66'], borderRadius: 6, maxBarThickness: 64 }]
+        },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { grid: { color: '#1a1a1a' }, ticks: { color: '#555' } },
+            y: { grid: { color: '#1a1a1a' }, ticks: { color: '#555', callback: function(v) { return v + 'ms'; } }, beginAtZero: true }
+          }
+        }
+      });
+    })
+    .catch(function() {});
+}
+
+function loadCalls() {
+  fetch('/api/calls')
+    .then(function(r) { return r.json(); })
+    .then(function(calls) {
+      var w = document.getElementById('calls-wrap');
+      if (!calls || !calls.length) { w.innerHTML = '<div class="empty">Aucun appel enregistré</div>'; return; }
+      var h = '<table><thead><tr>'
+        + '<th>Date</th><th>Numéro</th><th>Durée</th><th>Tours</th>'
+        + '<th>Moy LLM</th><th>Moy TTS</th><th>Moy Total</th><th>Statut</th>'
+        + '</tr></thead><tbody>';
+      calls.forEach(function(c) {
+        h += '<tr class="row" onclick="loadDetail(\'' + c.id + '\')">'
+          + '<td>' + fmtDate(c.created_at) + '</td>'
+          + '<td>' + (c.caller_number || '—') + '</td>'
+          + '<td>' + (c.duree_secondes ? c.duree_secondes + 's' : '—') + '</td>'
+          + '<td>' + (c.turns || 0) + '</td>'
+          + '<td>' + ms(c.avg_llm_ms) + '</td>'
+          + '<td>' + ms(c.avg_tts_ms) + '</td>'
+          + '<td>' + ms(c.avg_total_ms) + '</td>'
+          + '<td>' + badge(c.statut) + '</td>'
+          + '</tr>';
+      });
+      h += '</tbody></table>';
+      w.innerHTML = h;
+    })
+    .catch(function() {
+      document.getElementById('calls-wrap').innerHTML = '<div class="empty">Erreur de chargement</div>';
+    });
+}
+
+function loadDetail(id) {
+  fetch('/api/calls/' + id)
+    .then(function(r) { return r.json(); })
+    .then(function(c) {
+      document.getElementById('calls-view').style.display = 'none';
+      document.getElementById('detail').style.display = 'block';
+
+      document.getElementById('detail-info').innerHTML =
+        '<div class="card-title">Détail appel — ' + fmtDate(c.created_at) + '</div>' +
+        '<div style="display:flex;gap:24px;flex-wrap:wrap;font-size:0.8rem;color:#666;margin-top:4px">' +
+        '<span>Numéro : <b style="color:#ccc">' + (c.caller_number || '—') + '</b></span>' +
+        '<span>Durée : <b style="color:#ccc">' + (c.duree_secondes ? c.duree_secondes + 's' : '—') + '</b></span>' +
+        '<span>Tours : <b style="color:#ccc">' + (c.turns || 0) + '</b></span>' +
+        '<span>Statut : ' + badge(c.statut) + '</span>' +
+        '</div>';
+
+      var turns = c.turns_detail || [];
+      var tw = document.getElementById('turns-wrap');
+      if (!turns.length) { tw.innerHTML = '<div class="empty">Aucun tour enregistré pour cet appel</div>'; return; }
+
+      tw.innerHTML = turns.map(function(t) {
+        var ok = !t.error;
+        return '<div class="turn">'
+          + '<div class="turn-hdr">'
+          + '<span>Tour ' + t.turn_number + ' ' + (ok ? '&#10003;' : '&#10007;') + '</span>'
+          + '<span style="color:#ff6600">Total : ' + ms(t.total_latency_ms) + '</span>'
+          + '</div>'
+          + '<div class="step"><span class="step-lbl">STT</span>'
+          + '<span class="step-txt">&ldquo;' + (t.stt_output_text || '—') + '&rdquo;</span>'
+          + '<span class="step-ms">' + ms(t.stt_duration_ms) + '</span></div>'
+          + '<div class="step"><span class="step-lbl">LLM</span>'
+          + '<span class="step-txt">&ldquo;' + (t.llm_output_text || '—') + '&rdquo;</span>'
+          + '<span class="step-ms">' + ms(t.llm_duration_ms) + '</span></div>'
+          + '<div class="step"><span class="step-lbl">TTS</span>'
+          + '<span class="step-txt">' + (t.tts_output_bytes ? t.tts_output_bytes + ' bytes' : '—') + '</span>'
+          + '<span class="step-ms">' + ms(t.tts_duration_ms) + '</span></div>'
+          + (t.error ? '<div class="step"><span class="step-lbl step-err">ERR</span><span class="step-txt step-err">' + t.error + '</span></div>' : '')
+          + '</div>';
+      }).join('');
+    })
+    .catch(function() {
+      document.getElementById('turns-wrap').innerHTML = '<div class="empty">Erreur de chargement</div>';
+    });
+}
+
+function showList() {
+  document.getElementById('detail').style.display = 'none';
+  document.getElementById('calls-view').style.display = '';
+}
+
+function loadAll() { loadStats(); loadCalls(); }
+loadAll();
+setInterval(loadAll, 30000);
+</script>
+</body>
+</html>
