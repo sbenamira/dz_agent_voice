@@ -43,7 +43,8 @@ function generateTwiMLStream(streamUrl, callSid) {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const response = new VoiceResponse();
   const connect = response.connect();
-  const stream = connect.stream({ url: streamUrl });
+  // inbound_track : reçoit uniquement la voix du caller, pas le TTS de Karim
+  const stream = connect.stream({ url: streamUrl, track: 'inbound_track' });
   if (callSid) stream.parameter({ name: 'callSid', value: callSid });
   return response.toString();
 }

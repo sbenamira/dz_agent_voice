@@ -50,6 +50,7 @@ function setupMediaStream(server) {
     let llmDurations = [];
     let ttsDurations = [];
     let totalDurations = [];
+    let isKarimSpeaking = false; // mute Deepgram pendant le TTS
 
     function sendAudio(mulawBuffer) {
       if (ws.readyState !== WebSocket.OPEN || !streamSid) return;
@@ -86,9 +87,11 @@ function setupMediaStream(server) {
               buffer = '';
               if (phrase) {
                 const t0 = Date.now();
+                isKarimSpeaking = true;
                 await synthesizeStream(phrase, mulawChunk => {
                   if (mulawChunk.length) { sendAudio(mulawChunk); ttsOutputBytesTurn += mulawChunk.length; }
-                }).catch(err => logger.error('TTS chunk', { error: err.message }));
+                }).catch(err => logger.error('TTS chunk', { error: err.message }))
+                  .finally(() => { isKarimSpeaking = false; });
                 ttsDurationTurn += Date.now() - t0;
                 spokenParts.push(phrase);
               }
@@ -99,9 +102,10 @@ function setupMediaStream(server) {
 
         if (buffer.trim()) {
           const t0 = Date.now();
+          isKarimSpeaking = true;
           await synthesizeStream(buffer.trim(), mulawChunk => {
             if (mulawChunk.length) { sendAudio(mulawChunk); ttsOutputBytesTurn += mulawChunk.length; }
-          }).catch(() => {});
+          }).catch(() => {}).finally(() => { isKarimSpeaking = false; });
           ttsDurationTurn += Date.now() - t0;
           spokenParts.push(buffer.trim());
         }
@@ -142,6 +146,11 @@ function setupMediaStream(server) {
       try {
         const msg = JSON.parse(data);
 
+        // Log chaque type d'événement WS pour diagnostic
+        if (msg.event !== 'media') {
+          logger.info('WS event', { event: msg.event, callId });
+        }
+
         if (msg.event === 'start') {
           streamSid = msg.streamSid;
           const twilioCallSid = msg.start?.callSid || msg.start?.customParameters?.callSid || 'unknown';
@@ -161,12 +170,17 @@ function setupMediaStream(server) {
           logger.info('Appel inbound démarré', { callId, twilioCallSid });
 
           const accueil = 'السلام عليكم سيدي، نشالله تكون بخير. أنا كريم، كيفاش نقدر نعاونك اليوم؟';
-          synthesizeStream(accueil, sendAudio).catch(err => logger.error('Accueil TTS', { error: err.message }));
+          isKarimSpeaking = true;
+          synthesizeStream(accueil, sendAudio)
+            .catch(err => logger.error('Accueil TTS', { error: err.message }))
+            .finally(() => { isKarimSpeaking = false; });
         }
 
         if (msg.event === 'media' && dgSession) {
-          const mulaw = Buffer.from(msg.media.payload, 'base64');
-          dgSession.send(mulawToLinear16(mulaw));
+          if (!isKarimSpeaking) {
+            const mulaw = Buffer.from(msg.media.payload, 'base64');
+            dgSession.send(mulawToLinear16(mulaw));
+          }
         }
 
         if (msg.event === 'stop') {
