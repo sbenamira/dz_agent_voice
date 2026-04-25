@@ -6,7 +6,9 @@ const logger = require('../utils/logger');
 function createDeepgramSession(onTranscript, onError) {
   let keepAliveTimer = null;
   let activeConnection = null;
-  let closed = false; // évite la reconnexion si close() est appelé volontairement
+  let closed = false;
+  let retryCount = 0;
+  const MAX_RETRIES = 3;
 
   function initConnection() {
     if (closed) return;
@@ -14,7 +16,7 @@ function createDeepgramSession(onTranscript, onError) {
     const deepgram = createClient(config.deepgram.apiKey);
     const connection = deepgram.listen.live({
       model: 'nova-2',
-      language: 'ar',
+      language: 'multi',
       encoding: 'mulaw',
       sample_rate: 8000,
       channels: 1,
@@ -36,9 +38,12 @@ function createDeepgramSession(onTranscript, onError) {
       const code = evt?.code ?? evt;
       if (code && code !== 1000) {
         logger.warn('Deepgram connexion fermée anormalement', { code, reason: evt?.reason });
-        if (code === 1006 && !closed) {
-          logger.info('Deepgram 1006 — reconnexion dans 1s');
+        if (code === 1006 && !closed && retryCount < MAX_RETRIES) {
+          retryCount++;
+          logger.info(`Deepgram 1006 — reconnexion dans 1s (tentative ${retryCount}/${MAX_RETRIES})`);
           setTimeout(initConnection, 1000);
+        } else if (retryCount >= MAX_RETRIES) {
+          logger.error('Deepgram 1006 — max reconnexions atteint, abandon');
         }
       } else {
         logger.info('Deepgram connexion fermée', { code });
