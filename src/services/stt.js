@@ -8,7 +8,7 @@ function createDeepgramSession(onTranscript, onError) {
 
   const connection = deepgram.listen.live({
     model: 'nova-2',
-    language: 'multi',   // multilingual : supporte darija (arabe + français mixte)
+    language: 'ar',
     encoding: 'mulaw',
     sample_rate: 8000,
     channels: 1,
@@ -41,6 +41,13 @@ function createDeepgramSession(onTranscript, onError) {
       try {
         const alt = data?.channel?.alternatives?.[0];
         const transcript = alt?.transcript || '';
+
+        // Log tous les events pour diagnostiquer (à retirer une fois stable)
+        logger.info('Deepgram transcript event', {
+          is_final: data.is_final,
+          speech_final: data.speech_final,
+          text: transcript.slice(0, 60) || '(vide)'
+        });
 
         if (data.is_final && transcript.trim()) {
           logger.info('Transcript reçu', { transcript: transcript.slice(0, 50) });
