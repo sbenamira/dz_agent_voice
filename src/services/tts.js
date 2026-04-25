@@ -8,7 +8,7 @@ function cacheKey(text) {
   return text.slice(0, 100);
 }
 
-// Streaming ElevenLabs ulaw_8000 → onChunk(Buffer mulaw) pour chaque chunk reçu
+// ElevenLabs ulaw_8000 → raw mulaw bytes → onChunk(Buffer) direct passthrough
 async function synthesizeStream(text, onChunk) {
   if (!text || !text.trim()) return;
 
@@ -22,6 +22,7 @@ async function synthesizeStream(text, onChunk) {
   const t0 = Date.now();
   let firstChunkMs = null;
   let totalBytes = 0;
+  let firstChunkSent = false;
 
   const response = await fetch(
     `https://api.elevenlabs.io/v1/text-to-speech/${config.elevenlabs.voiceId}/stream`,
@@ -51,25 +52,17 @@ async function synthesizeStream(text, onChunk) {
   }
 
   const chunks = [];
-  const reader = response.body.getReader();
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value || !value.length) continue;
-
-      const chunk = Buffer.from(value);
-      if (firstChunkMs === null) {
-        firstChunkMs = Date.now() - t0;
-        console.log(`[TTS ElevenLabs] Content-Type: ${response.headers?.get?.('content-type') || 'unknown'}, premier byte: 0x${chunk[0].toString(16).padStart(2, '0')}`);
-      }
-      chunks.push(chunk);
-      totalBytes += chunk.length;
-      onChunk(chunk);
+  for await (const value of response.body) {
+    const chunk = Buffer.from(value);
+    if (!firstChunkSent) {
+      firstChunkMs = Date.now() - t0;
+      firstChunkSent = true;
+      console.log(`[TTS ElevenLabs] first_chunk: ${firstChunkMs}ms, Content-Type: ${response.headers?.get?.('content-type') || 'unknown'}, premier_byte: 0x${chunk[0]?.toString(16).padStart(2, '0')}`);
     }
-  } finally {
-    reader.releaseLock();
+    chunks.push(chunk);
+    totalBytes += chunk.length;
+    onChunk(chunk);
   }
 
   const full = Buffer.concat(chunks);
@@ -78,11 +71,11 @@ async function synthesizeStream(text, onChunk) {
     audioCache.set(key, full);
   }
 
-  console.log(`[TTS ElevenLabs] first_chunk: ${firstChunkMs}ms, total: ${totalBytes} bytes`);
+  console.log(`[TTS ElevenLabs] total: ${totalBytes} bytes, latence: ${firstChunkMs}ms`);
   logger.info('TTS stream terminé', { chars: text.length, first_chunk_ms: firstChunkMs, bytes: totalBytes });
 }
 
-// Synthèse complète — utilisée par fillers.js pour pré-générer des clips mulaw
+// Synthèse complète — pour fillers.js (pré-génération au démarrage)
 async function synthesize(text) {
   if (!text || !text.trim()) return Buffer.alloc(0);
 

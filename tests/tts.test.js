@@ -12,21 +12,17 @@ process.env.SUPABASE_ANON_KEY = 'test';
 jest.mock('dotenv', () => ({ config: jest.fn() }));
 jest.mock('@supabase/supabase-js', () => ({ createClient: () => ({}) }));
 
-// Construit un faux response.body stream qui émet les chunks donnés
+// Construit un faux response.body async iterable qui émet les chunks donnés
 function makeStreamResponse(chunks, ok = true) {
-  let i = 0;
-  const reader = {
-    read: jest.fn().mockImplementation(async () => {
-      if (i < chunks.length) return { done: false, value: chunks[i++] };
-      return { done: true, value: undefined };
-    }),
-    releaseLock: jest.fn()
-  };
   return {
     ok,
     status: ok ? 200 : 401,
     headers: { get: jest.fn().mockReturnValue('audio/basic') },
-    body: { getReader: jest.fn().mockReturnValue(reader) },
+    body: {
+      [Symbol.asyncIterator]: async function* () {
+        for (const chunk of chunks) yield chunk;
+      }
+    },
     text: jest.fn().mockResolvedValue(ok ? '' : 'Unauthorized')
   };
 }
