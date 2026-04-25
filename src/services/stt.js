@@ -7,7 +7,7 @@ function createDeepgramSession(onTranscript, onError) {
   const deepgram = createClient(config.deepgram.apiKey);
 
   const connection = deepgram.listen.live({
-    model: 'nova-2',
+    model: 'whisper-large',
     language: 'ar',
     encoding: 'linear16',
     sample_rate: 8000,
