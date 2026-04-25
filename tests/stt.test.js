@@ -3,8 +3,6 @@ process.env.TWILIO_ACCOUNT_SID = 'test';
 process.env.TWILIO_AUTH_TOKEN = 'test';
 process.env.TWILIO_PHONE_NUMBER = '+1234567890';
 process.env.DEEPGRAM_API_KEY = 'test';
-process.env.ELEVENLABS_API_KEY = 'test';
-process.env.ELEVENLABS_VOICE_ID = 'test';
 process.env.OPENAI_API_KEY = 'test';
 process.env.SUPABASE_URL = 'https://test.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test';
@@ -24,10 +22,7 @@ jest.mock('@deepgram/sdk', () => ({
     listen: { live: jest.fn().mockReturnValue(mockConnection) }
   }),
   LiveTranscriptionEvents: {
-    Open: 'open',
-    Transcript: 'transcript',
-    Error: 'error',
-    Close: 'close'
+    Open: 'open', Transcript: 'transcript', Error: 'error', Close: 'close'
   }
 }));
 
@@ -42,16 +37,18 @@ describe('stt service', () => {
     expect(typeof session.close).toBe('function');
   });
 
-  it('enregistre le handler Open sur la connexion', () => {
+  it('enregistre le handler Error avant Open', () => {
     createDeepgramSession(() => {}, () => {});
-    expect(mockConnection.on).toHaveBeenCalledWith('open', expect.any(Function));
+    const calls = mockConnection.on.mock.calls.map(c => c[0]);
+    const errorIdx = calls.indexOf('error');
+    const openIdx = calls.indexOf('open');
+    expect(errorIdx).toBeGreaterThanOrEqual(0);
+    expect(errorIdx).toBeLessThan(openIdx);
   });
 
-  it('send() transmet le buffer audio quand ready', () => {
+  it('send() transmet le buffer quand readyState === 1', () => {
     const session = createDeepgramSession(() => {}, () => {});
-    const openCb = mockConnection.on.mock.calls.find(c => c[0] === 'open')?.[1];
-    if (openCb) openCb();
-    const buf = Buffer.from([0x7f, 0x80, 0x00]);
+    const buf = Buffer.from([0x7f, 0x80]);
     session.send(buf);
     expect(mockConnection.send).toHaveBeenCalledWith(buf);
   });
@@ -60,6 +57,18 @@ describe('stt service', () => {
     const session = createDeepgramSession(() => {}, () => {});
     session.close();
     expect(mockConnection.finish).toHaveBeenCalled();
+  });
+
+  it('envoie un KeepAlive JSON après l\'ouverture', () => {
+    jest.useFakeTimers();
+    createDeepgramSession(() => {}, () => {});
+    const openCb = mockConnection.on.mock.calls.find(c => c[0] === 'open')?.[1];
+    if (openCb) openCb();
+    jest.advanceTimersByTime(5000);
+    expect(mockConnection.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'KeepAlive' })
+    );
+    jest.useRealTimers();
   });
 
   it('appelle onTranscript avec le texte final', () => {

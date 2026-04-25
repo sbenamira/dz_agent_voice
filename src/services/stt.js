@@ -2,76 +2,102 @@ const { createClient, LiveTranscriptionEvents } = require('@deepgram/sdk');
 const config = require('../config');
 const logger = require('../utils/logger');
 
-// Crée une session de transcription Deepgram en streaming pour un appel Twilio
+// Crée une session Deepgram en streaming avec KeepAlive et reconnexion automatique
 function createDeepgramSession(onTranscript, onError) {
-  const deepgram = createClient(config.deepgram.apiKey);
+  let keepAliveTimer = null;
+  let activeConnection = null;
+  let closed = false; // évite la reconnexion si close() est appelé volontairement
 
-  const connection = deepgram.listen.live({
-    model: 'nova-2',
-    language: 'ar',
-    encoding: 'mulaw',
-    sample_rate: 8000,
-    channels: 1,
-    endpointing: 300,
-    interim_results: false
-  });
+  function initConnection() {
+    if (closed) return;
 
-  // Enregistrer l'handler d'erreur avant Open pour éviter ERR_UNHANDLED_ERROR si Deepgram échoue avant l'ouverture
-  connection.on(LiveTranscriptionEvents.Error, err => {
-    const msg = err?.message || err?.description || err?.reason
-      || (err ? JSON.stringify(err) : 'unknown');
-    logger.error('Deepgram erreur', { error: msg, type: err?.type, code: err?.code });
-    if (onError) onError(err);
-  });
+    const deepgram = createClient(config.deepgram.apiKey);
+    const connection = deepgram.listen.live({
+      model: 'nova-2',
+      language: 'ar',
+      encoding: 'mulaw',
+      sample_rate: 8000,
+      channels: 1,
+      endpointing: 300,
+      interim_results: false
+    });
+    activeConnection = connection;
 
-  // Hors de Open pour capturer aussi les closes prématurés (ex: 4000 = unauthorized)
-  connection.on(LiveTranscriptionEvents.Close, evt => {
-    const code = evt?.code ?? evt;
-    if (code && code !== 1000) {
-      logger.warn('Deepgram connexion fermée anormalement', { code, reason: evt?.reason });
-    } else {
-      logger.info('Deepgram connexion fermée', { code });
-    }
-  });
+    // Handler d'erreur avant Open pour éviter ERR_UNHANDLED_ERROR
+    connection.on(LiveTranscriptionEvents.Error, err => {
+      const msg = err?.message || err?.description || err?.reason
+        || (err ? JSON.stringify(err) : 'unknown');
+      logger.error('Deepgram erreur', { error: msg, type: err?.type, code: err?.code });
+      if (onError) onError(err);
+    });
 
-  connection.on(LiveTranscriptionEvents.Open, () => {
-    logger.info('Deepgram connexion ouverte');
-
-    connection.on(LiveTranscriptionEvents.Transcript, data => {
-      try {
-        const alt = data?.channel?.alternatives?.[0];
-        const transcript = alt?.transcript || '';
-
-        // Log tous les events pour diagnostiquer (à retirer une fois stable)
-        logger.info('Deepgram transcript event', {
-          is_final: data.is_final,
-          speech_final: data.speech_final,
-          text: transcript.slice(0, 60) || '(vide)'
-        });
-
-        if (data.is_final && transcript.trim()) {
-          logger.info('Transcript reçu', { transcript: transcript.slice(0, 50) });
-          onTranscript(transcript.trim());
+    connection.on(LiveTranscriptionEvents.Close, evt => {
+      clearInterval(keepAliveTimer);
+      const code = evt?.code ?? evt;
+      if (code && code !== 1000) {
+        logger.warn('Deepgram connexion fermée anormalement', { code, reason: evt?.reason });
+        if (code === 1006 && !closed) {
+          logger.info('Deepgram 1006 — reconnexion dans 1s');
+          setTimeout(initConnection, 1000);
         }
-      } catch (err) {
-        logger.error('Erreur traitement transcript', { error: err.message });
+      } else {
+        logger.info('Deepgram connexion fermée', { code });
       }
     });
-  });
+
+    connection.on(LiveTranscriptionEvents.Open, () => {
+      logger.info('Deepgram connexion ouverte');
+
+      // KeepAlive toutes les 5s pour maintenir le WebSocket ouvert
+      keepAliveTimer = setInterval(() => {
+        try {
+          if (connection.getReadyState() === 1) {
+            connection.send(JSON.stringify({ type: 'KeepAlive' }));
+          }
+        } catch (err) {
+          logger.warn('Deepgram keepAlive', { error: err.message });
+        }
+      }, 5000);
+
+      connection.on(LiveTranscriptionEvents.Transcript, data => {
+        try {
+          const alt = data?.channel?.alternatives?.[0];
+          const transcript = alt?.transcript || '';
+
+          logger.info('Deepgram transcript event', {
+            is_final: data.is_final,
+            speech_final: data.speech_final,
+            text: transcript.slice(0, 60) || '(vide)'
+          });
+
+          if (data.is_final && transcript.trim()) {
+            logger.info('Transcript reçu', { transcript: transcript.slice(0, 50) });
+            onTranscript(transcript.trim());
+          }
+        } catch (err) {
+          logger.error('Erreur traitement transcript', { error: err.message });
+        }
+      });
+    });
+  }
+
+  initConnection();
 
   return {
     send(audioBuffer) {
       try {
-        if (connection.getReadyState() === 1) {
-          connection.send(audioBuffer);
+        if (activeConnection && activeConnection.getReadyState() === 1) {
+          activeConnection.send(audioBuffer);
         }
       } catch (err) {
         logger.error('Deepgram send', { error: err.message });
       }
     },
     close() {
+      closed = true;
+      clearInterval(keepAliveTimer);
       try {
-        connection.finish();
+        if (activeConnection) activeConnection.finish();
       } catch (err) {
         logger.error('Deepgram close', { error: err.message });
       }
