@@ -7,13 +7,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Agent vocal IA pour le marché algérien (darija algérienne + français). Twilio reçoit l'appel et ouvre un WebSocket audio mulaw 8kHz vers ce serveur, qui pipe STT → LLM → TTS en streaming.
 
 **Stack actuelle (2026-04) :**
-- STT : Deepgram **nova-3**, `language=ar`, `encoding=mulaw`, `endpointing=150ms` ✅
+- STT : Deepgram **nova-3**, `language=ar`, `encoding=mulaw`, `endpointing=150ms`
 - LLM : Groq `llama-3.3-70b-versatile` (~400ms) — répond en JSON `{"speak":"...","display":"..."}`
-- TTS : Microsoft Edge TTS `ar-DZ-IsmaelNeural` via `msedge-tts` + ffmpeg pipe → mulaw streaming ✅
-- Fillers audio : `src/fillers.js` — 3 clips pré-générés au démarrage, joués avant le LLM ✅
-- Barge-in : interim Deepgram → event Twilio `clear` pour couper Karim ✅
+- TTS : **ElevenLabs** `eleven_turbo_v2_5`, `output_format=ulaw_8000` (URL param + body). ElevenLabs retourne parfois `audio/mpeg` malgré le param → fallback ffmpeg MP3→mulaw automatique
+- Fillers audio : `src/fillers.js` — 3 clips mulaw pré-générés au démarrage, joués avant le LLM pour masquer la latence
+- Barge-in : interim Deepgram → event Twilio `clear` pour couper Karim
 - DB : Supabase (PostgreSQL + pgvector)
-- Hébergement : Render.com (deploy auto sur push `main`)
+- Hébergement : Render.com (deploy auto sur push `main`), ffmpeg disponible
 
 ## COMMANDES
 
@@ -32,38 +32,41 @@ npx jest tests/stt.test.js --forceExit   # test unique
 
 ```
 Twilio appelle → POST /inbound → TwiML WebSocket → /media-stream
-WebSocket reçoit audio mulaw → Deepgram STT (streaming)
-Transcript → agent.streamResponse() → Groq LLM (streaming)
-Chunks LLM → synthesizeStream() → ffmpeg pipe → mulaw chunks → Twilio
+WebSocket reçoit audio mulaw → Deepgram STT (streaming, endpointing 150ms)
+is_final transcript → enqueueOrProcess() → handleTranscript()
+  → filler audio immédiat → agent.streamResponse() → Groq LLM
+  → speakText extrait du JSON → synthesizeStream() → ElevenLabs ulaw_8000
+  → (si MP3 reçu → pipeMP3ToMulaw ffmpeg → mulaw)
+  → chunks mulaw → sendAudio() → Twilio WebSocket
 ```
 
 Fichier central : `src/routes/inbound.js` — gère tout le cycle de vie d'un appel via `setupMediaStream(server)`.
 
 ### Points d'architecture critiques
 
-**isKarimSpeaking** (`inbound.js`) : flag booléen qui coupe l'envoi audio à Deepgram pendant que Karim parle, pour éviter que le TTS soit re-transcrit. `track:'inbound_track'` dans le TwiML fait la même chose côté Twilio.
+**`enqueueOrProcess` + `transcriptQueue`** (`inbound.js`) : les transcripts finaux STT ne sont jamais perdus. Si `isProcessing=true`, le transcript est mis en file dans `transcriptQueue`. Le bloc `finally` de `handleTranscript` dépile et traite le suivant. Log `[STT FINAL]` sur chaque transcript avec `sendingToLLM: 'oui'|'file'`.
 
-**TTS streaming** (`services/tts.js`) : `synthesizeStream(text, onChunk)` pipe msedge-tts → ffmpeg avec `-fflags nobuffer` pour envoyer le premier chunk mulaw sans attendre la fin de la synthèse.
+**`isTTSPlaying`** (`inbound.js`) : flag mis à `true` uniquement pendant `synthesizeStream()` — pas pendant le filler, pas pendant l'appel LLM. Sert à : (1) couper l'envoi audio à Deepgram pendant que Karim parle (anti-écho), (2) n'envoyer l'event Twilio `clear` que si le TTS est réellement actif (barge-in). Renommé depuis `isKarimSpeaking`.
 
-**Deepgram KeepAlive** (`services/stt.js`) : ping JSON `{type:'KeepAlive'}` toutes les 5s. Max 3 reconnexions sur 1006. Nova-3 + `language=ar` fonctionne (nova-2 + `language=ar` donnait 1006).
+**Barge-in** (`inbound.js`) : `isBargingIn=true` + version counter `activeTurnId`. Interim transcript Deepgram → `ws.send({event:'clear', streamSid})`. Le tour suivant override `isProcessing` si `isBargingIn=true`. Le version counter empêche le `finally` d'un tour interrompu de remettre `isProcessing=false` après qu'un nouveau tour a démarré.
 
-**Fillers** (`src/fillers.js`) : `initFillers()` appelé au chargement du module `inbound.js`. `getRandomFiller()` retourne un Buffer mulaw aléatoire ou `null` si pas encore prêt.
+**TTS ElevenLabs** (`services/tts.js`) : requête vers `/stream?output_format=ulaw_8000`. Si `Content-Type: audio/mpeg` en réponse → `pipeMP3ToMulaw()` converti via ffmpeg. Sinon passthrough direct. Cache mulaw en mémoire (50 entrées max). Les `console.log` sont intentionnels pour diagnostic Render : `[TTS ElevenLabs] Content-Type: ..., premier_byte: 0x...`.
 
-**Barge-in** (`inbound.js`) : flag `isBargingIn` + version counter `activeTurnId`. Interim transcript → `ws.send({event:'clear', streamSid})`. Le tour suivant force `isProcessing=false` si `isBargingIn=true`.
+**Format JSON agent** (`services/agent.js`) : le LLM génère `{"speak":"...","display":"..."}`. `streamResponse` accumule le stream complet (pas de stop tokens — ils tronqueraient le JSON), parse, extrait `speak`, appelle `onChunk(speakText)` une seule fois.
 
-**Format JSON agent** (`services/agent.js`) : le LLM répond `{"speak":"...","display":"..."}`. `streamResponse` parse le JSON, extrait `speak`, appelle `onChunk(speakText)` une seule fois après le stream complet (pas de stop tokens).
+**Deepgram session** (`services/stt.js`) : `createDeepgramSession(onTranscript, onError, onInterim)`. Le 3e paramètre `onInterim` déclenche le barge-in dans `inbound.js`. KeepAlive ping `{type:'KeepAlive'}` toutes les 5s. Max 3 reconnexions sur 1006.
 
-**pendingCallers** (`inbound.js`) : Map `CallSid → numéro appelant` entre le POST Twilio et l'ouverture du WebSocket.
+**Fillers** (`src/fillers.js`) : `initFillers()` appelé en module-scope dans `inbound.js` (fire-and-forget). `getRandomFiller()` retourne `null` si pas encore prêt — `handleTranscript` vérifie avant d'appeler `sendAudio`.
 
-**conversationHistory** : tableau limité à 20 messages, `.slice(-6)` envoyé au LLM.
+**pendingCallers** (`inbound.js`) : Map `CallSid → numéro appelant` entre le POST webhook Twilio et l'ouverture du WebSocket `/media-stream`.
 
 ### Services
 
 | Fichier | Rôle |
 |---|---|
-| `services/stt.js` | Session Deepgram WebSocket, retourne `{send, close}` |
-| `services/tts.js` | `synthesizeStream(text, onChunk)` + cache mulaw |
-| `services/agent.js` | `streamResponse({userMessage, history, onChunk})` via Groq |
+| `services/stt.js` | Session Deepgram WebSocket streaming, retourne `{send, close}` |
+| `services/tts.js` | `synthesizeStream(text, onChunk)` ElevenLabs + fallback ffmpeg + cache mulaw |
+| `services/agent.js` | `streamResponse({userMessage, history, onChunk})` Groq + parse JSON speak |
 | `services/database.js` | CRUD Supabase : calls, transcripts, call_turns, monitoring |
 | `services/rag.js` | Chunking + embeddings OpenAI + recherche pgvector |
 | `services/campaign.js` | Campagnes outbound séquentielles |
@@ -85,7 +88,7 @@ Fichier central : `src/routes/inbound.js` — gère tout le cycle de vie d'un ap
 
 ### Base de données (monitoring)
 
-La table `call_turns` (migration `sql/monitoring.sql`) stocke chaque tour de conversation avec `llm_duration_ms`, `tts_duration_ms`, `total_latency_ms`. Le dashboard lit via `GET /api/calls` et `GET /api/calls/:id`.
+La table `call_turns` (`sql/monitoring.sql`) stocke chaque tour avec `llm_duration_ms`, `tts_duration_ms`, `total_latency_ms`. Le dashboard lit via `GET /api/calls` et `GET /api/calls/:id`.
 
 ## VARIABLES D'ENVIRONNEMENT REQUISES
 
@@ -93,13 +96,15 @@ La table `call_turns` (migration `sql/monitoring.sql`) stocke chaque tour de con
 GROQ_API_KEY
 TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER
 DEEPGRAM_API_KEY
+ELEVENLABS_API_KEY
+ELEVENLABS_VOICE_ID
 OPENAI_API_KEY          # embeddings RAG uniquement
 SUPABASE_URL / SUPABASE_ANON_KEY
 ```
 
 Optionnelles :
 ```
-DASHBOARD_PASSWORD      # Basic Auth sur /dashboard (sans clé = accès libre)
+DASHBOARD_PASSWORD      # Basic Auth sur /dashboard (sans = accès libre)
 TWILIO_API_KEY / TWILIO_API_SECRET / TWILIO_TWIML_APP_SID  # test-call navigateur
 ```
 
@@ -107,7 +112,8 @@ TWILIO_API_KEY / TWILIO_API_SECRET / TWILIO_TWIML_APP_SID  # test-call navigateu
 
 - Commenter le code **en français**
 - `async/await` partout, `try/catch` sur chaque await
-- Logs via `logger` (Winston) — jamais `console.log`
-- Tests dans `tests/` — mocker `@supabase/supabase-js`, `dotenv`, et les services externes
-- `ffmpeg` doit être disponible sur le serveur (présent sur Render)
-- Prompts Karim dans `src/prompts/karim_darija.txt` et `karim_fr.txt` — réponses 2-3 phrases max, jamais de bullet points
+- Logs via `logger` (Winston) — exception : `tts.js` utilise `console.log` intentionnellement pour les diagnostics TTS visibles dans Render logs
+- Tests dans `tests/` — mocker `@supabase/supabase-js`, `dotenv`, `child_process` (spawn/exec pour ffmpeg), et les services externes
+- Tous les fichiers de test doivent définir `ELEVENLABS_API_KEY` et `ELEVENLABS_VOICE_ID` dans `process.env` (requis par `config.js validate()`)
+- `ffmpeg` doit être disponible sur le serveur (présent sur Render, vérifié au démarrage via `[STARTUP] ffmpeg OK`)
+- Prompts Karim dans `src/prompts/karim_darija.txt` — format JSON `{"speak":"...","display":"..."}`, 1-2 phrases, vocabulaire darija algérienne (pas marocain/tunisien : تاع pas ديال, دابا pas درك, بزاف pas برشا)
