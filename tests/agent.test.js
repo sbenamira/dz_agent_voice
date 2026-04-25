@@ -1,10 +1,8 @@
-process.env.ANTHROPIC_API_KEY = 'test';
+process.env.GOOGLE_API_KEY = 'test';
 process.env.TWILIO_ACCOUNT_SID = 'test';
 process.env.TWILIO_AUTH_TOKEN = 'test';
 process.env.TWILIO_PHONE_NUMBER = '+1234567890';
 process.env.DEEPGRAM_API_KEY = 'test';
-process.env.ELEVENLABS_API_KEY = 'test';
-process.env.ELEVENLABS_VOICE_ID = 'test';
 process.env.OPENAI_API_KEY = 'test';
 process.env.SUPABASE_URL = 'https://test.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test';
@@ -14,14 +12,20 @@ jest.mock('@supabase/supabase-js', () => ({ createClient: () => ({}) }));
 
 const mockStream = {
   [Symbol.asyncIterator]: async function* () {
-    yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'واخا ' } };
-    yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'سيدي.' } };
+    yield { text: () => 'واخا ' };
+    yield { text: () => 'سيدي.' };
   }
 };
 
-jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({
-  messages: { stream: jest.fn().mockReturnValue(mockStream) }
-})));
+const mockSendMessageStream = jest.fn().mockResolvedValue({ stream: mockStream });
+const mockStartChat = jest.fn().mockReturnValue({ sendMessageStream: mockSendMessageStream });
+const mockGetGenerativeModel = jest.fn().mockReturnValue({ startChat: mockStartChat });
+
+jest.mock('@google/generative-ai', () => ({
+  GoogleGenerativeAI: jest.fn().mockImplementation(() => ({
+    getGenerativeModel: mockGetGenerativeModel
+  }))
+}));
 
 jest.mock('../src/services/rag', () => ({
   searchContext: jest.fn().mockResolvedValue('Contexte RAG test')
@@ -88,6 +92,25 @@ describe('agent service', () => {
       });
       expect(insertTranscript).toHaveBeenCalledTimes(2);
       expect(insertTranscript).toHaveBeenCalledWith(expect.objectContaining({ role: 'client' }));
+    });
+
+    it('convertit l\'historique assistant→model pour Gemini', async () => {
+      await streamResponse({
+        callId: 'call-uuid',
+        subjectId: null,
+        userMessage: 'Bonjour',
+        history: [
+          { role: 'user', content: 'Salam' },
+          { role: 'assistant', content: 'Salam alikoum' }
+        ],
+        onChunk: () => {}
+      });
+      expect(mockStartChat).toHaveBeenCalledWith({
+        history: [
+          { role: 'user', parts: [{ text: 'Salam' }] },
+          { role: 'model', parts: [{ text: 'Salam alikoum' }] }
+        ]
+      });
     });
   });
 });

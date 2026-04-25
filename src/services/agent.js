@@ -1,12 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const Anthropic = require('@anthropic-ai/sdk');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const config = require('../config');
 const logger = require('../utils/logger');
 const rag = require('./rag');
 const db = require('./database');
 
-const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
+const genAI = new GoogleGenerativeAI(config.google.apiKey);
 
 const promptDarija = fs.readFileSync(path.join(__dirname, '../prompts/karim_darija.txt'), 'utf8');
 const promptFr = fs.readFileSync(path.join(__dirname, '../prompts/karim_fr.txt'), 'utf8');
@@ -22,7 +22,7 @@ function selectPrompt(text) {
   return isArabic(text) ? promptDarija : promptFr;
 }
 
-// Stream une réponse Claude Haiku et appelle onChunk pour chaque fragment
+// Stream une réponse Gemini 2.5 Flash et appelle onChunk pour chaque fragment
 async function streamResponse({ callId, subjectId, userMessage, history = [], onChunk }) {
   try {
     const langue = isArabic(userMessage) ? 'ar' : 'fr';
@@ -37,25 +37,27 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], on
     const systemPrompt = selectPrompt(userMessage) +
       (ragContext ? `\n\n## CONTEXTE DISPONIBLE\n${ragContext}` : '');
 
-    const messages = [
-      ...history.map(h => ({ role: h.role, content: h.content })),
-      { role: 'user', content: userMessage }
-    ];
-
-    let fullResponse = '';
-
-    const stream = await anthropic.messages.stream({
-      model: config.anthropic.model,
-      max_tokens: 300,
-      system: systemPrompt,
-      messages
+    const model = genAI.getGenerativeModel({
+      model: config.google.model,
+      systemInstruction: systemPrompt,
+      generationConfig: { maxOutputTokens: 300 }
     });
 
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        const chunk = event.delta.text;
-        fullResponse += chunk;
-        if (onChunk) onChunk(chunk);
+    // Convertir l'historique : 'assistant' → 'model' pour l'API Gemini
+    const geminiHistory = history.map(h => ({
+      role: h.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: h.content }]
+    }));
+
+    const chat = model.startChat({ history: geminiHistory });
+    const result = await chat.sendMessageStream(userMessage);
+
+    let fullResponse = '';
+    for await (const chunk of result.stream) {
+      const text = chunk.text();
+      if (text) {
+        fullResponse += text;
+        if (onChunk) onChunk(text);
       }
     }
 

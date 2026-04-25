@@ -3,7 +3,7 @@ require('dotenv').config();
 const logger = require('./utils/logger');
 
 const REQUIRED_KEYS = [
-  'ANTHROPIC_API_KEY',
+  'GOOGLE_API_KEY',
   'TWILIO_ACCOUNT_SID',
   'TWILIO_AUTH_TOKEN',
   'TWILIO_PHONE_NUMBER',
@@ -24,9 +24,9 @@ function validate() {
 validate();
 
 module.exports = {
-  anthropic: {
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    model: 'claude-haiku-4-5-20251001'
+  google: {
+    apiKey: process.env.GOOGLE_API_KEY,
+    model: 'gemini-2.5-flash'
   },
   twilio: {
     accountSid: process.env.TWILIO_ACCOUNT_SID,
