@@ -8,8 +8,8 @@ function createDeepgramSession(onTranscript, onError) {
 
   const connection = deepgram.listen.live({
     model: 'nova-2',
-    language: 'multi',
-    encoding: 'mulaw',
+    language: 'ar',
+    encoding: 'linear16',
     sample_rate: 8000,
     channels: 1,
     endpointing: 300,

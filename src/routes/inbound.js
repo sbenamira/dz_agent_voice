@@ -6,6 +6,7 @@ const db = require('../services/database');
 const agent = require('../services/agent');
 const { createDeepgramSession } = require('../services/stt');
 const { synthesizeStream } = require('../services/tts');
+const { mulawToLinear16 } = require('../utils/audio');
 const { generateTwiMLStream } = require('../services/telephony');
 
 const router = express.Router();
@@ -118,7 +119,8 @@ function setupMediaStream(server) {
         }
 
         if (msg.event === 'media' && dgSession) {
-          dgSession.send(Buffer.from(msg.media.payload, 'base64'));
+          const mulaw = Buffer.from(msg.media.payload, 'base64');
+          dgSession.send(mulawToLinear16(mulaw));
         }
 
         if (msg.event === 'stop') {
