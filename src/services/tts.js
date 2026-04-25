@@ -1,3 +1,4 @@
+const { spawn } = require('child_process');
 const config = require('../config');
 const logger = require('../utils/logger');
 
@@ -8,7 +9,41 @@ function cacheKey(text) {
   return text.slice(0, 100);
 }
 
-// ElevenLabs ulaw_8000 → raw mulaw bytes → onChunk(Buffer) direct passthrough
+// Fallback : pipe un stream MP3 → ffmpeg → chunks mulaw 8kHz
+function pipeMP3ToMulaw(responseBody, onChunk) {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', [
+      '-loglevel', 'error',
+      '-fflags', 'nobuffer',
+      '-i', 'pipe:0',
+      '-ar', '8000', '-ac', '1',
+      '-acodec', 'pcm_mulaw',
+      '-f', 'mulaw', 'pipe:1'
+    ]);
+
+    ffmpeg.stdin.on('error', () => {}); // ignorer EPIPE si ffmpeg quitte tôt
+    ffmpeg.stderr.on('data', () => {});
+
+    ffmpeg.stdout.on('data', chunk => onChunk(chunk));
+    ffmpeg.stdout.on('end', resolve);
+    ffmpeg.on('error', err => reject(err));
+
+    // Pipe ElevenLabs response body → ffmpeg stdin
+    (async () => {
+      try {
+        for await (const value of responseBody) {
+          ffmpeg.stdin.write(Buffer.from(value));
+        }
+        ffmpeg.stdin.end();
+      } catch (err) {
+        ffmpeg.kill();
+        reject(err);
+      }
+    })();
+  });
+}
+
+// ElevenLabs → onChunk(Buffer mulaw) pour chaque chunk reçu
 async function synthesizeStream(text, onChunk) {
   if (!text || !text.trim()) return;
 
@@ -22,10 +57,10 @@ async function synthesizeStream(text, onChunk) {
   const t0 = Date.now();
   let firstChunkMs = null;
   let totalBytes = 0;
-  let firstChunkSent = false;
 
+  // output_format dans URL (authoritative) ET dans le body (compat SDK)
   const response = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${config.elevenlabs.voiceId}/stream`,
+    `https://api.elevenlabs.io/v1/text-to-speech/${config.elevenlabs.voiceId}/stream?output_format=ulaw_8000`,
     {
       method: 'POST',
       headers: {
@@ -51,18 +86,27 @@ async function synthesizeStream(text, onChunk) {
     throw new Error(`ElevenLabs ${response.status}: ${errText.slice(0, 200)}`);
   }
 
+  const contentType = response.headers?.get?.('content-type') || '';
+  console.log('[TTS ElevenLabs] Content-Type:', contentType);
+
   const chunks = [];
 
-  for await (const value of response.body) {
-    const chunk = Buffer.from(value);
-    if (!firstChunkSent) {
-      firstChunkMs = Date.now() - t0;
-      firstChunkSent = true;
-      console.log(`[TTS ElevenLabs] first_chunk: ${firstChunkMs}ms, Content-Type: ${response.headers?.get?.('content-type') || 'unknown'}, premier_byte: 0x${chunk[0]?.toString(16).padStart(2, '0')}`);
-    }
+  const trackChunk = (chunk) => {
+    if (firstChunkMs === null) firstChunkMs = Date.now() - t0;
     chunks.push(chunk);
     totalBytes += chunk.length;
     onChunk(chunk);
+  };
+
+  if (contentType.includes('audio/mpeg')) {
+    // ElevenLabs ignore le param ulaw_8000 → conversion MP3→mulaw via ffmpeg
+    logger.warn('TTS ElevenLabs retourne MP3 malgré ulaw_8000 — conversion ffmpeg activée');
+    await pipeMP3ToMulaw(response.body, trackChunk);
+  } else {
+    // Passthrough direct : raw mulaw bytes
+    for await (const value of response.body) {
+      trackChunk(Buffer.from(value));
+    }
   }
 
   const full = Buffer.concat(chunks);
@@ -71,7 +115,7 @@ async function synthesizeStream(text, onChunk) {
     audioCache.set(key, full);
   }
 
-  console.log(`[TTS ElevenLabs] total: ${totalBytes} bytes, latence: ${firstChunkMs}ms`);
+  console.log(`[TTS ElevenLabs] total: ${totalBytes} bytes, first_chunk: ${firstChunkMs}ms`);
   logger.info('TTS stream terminé', { chars: text.length, first_chunk_ms: firstChunkMs, bytes: totalBytes });
 }
 

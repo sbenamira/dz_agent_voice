@@ -12,6 +12,26 @@ process.env.SUPABASE_ANON_KEY = 'test';
 jest.mock('dotenv', () => ({ config: jest.fn() }));
 jest.mock('@supabase/supabase-js', () => ({ createClient: () => ({}) }));
 
+// Mock child_process pour le fallback ffmpeg MP3→mulaw
+jest.mock('child_process', () => {
+  const { PassThrough, EventEmitter } = require('stream');
+  return {
+    spawn: jest.fn().mockImplementation(() => {
+      const proc = new EventEmitter();
+      proc.stdin = new PassThrough();
+      proc.stdout = new PassThrough();
+      proc.stderr = new PassThrough();
+      proc.kill = jest.fn();
+      process.nextTick(() => {
+        proc.stdout.write(Buffer.from([0x7f, 0x80])); // fake mulaw output
+        proc.stdout.end();
+      });
+      return proc;
+    }),
+    exec: jest.fn((cmd, cb) => cb(null, 'ffmpeg version 5.1'))
+  };
+});
+
 // Construit un faux response.body async iterable qui émet les chunks donnés
 function makeStreamResponse(chunks, ok = true) {
   return {
@@ -102,6 +122,26 @@ describe('tts service (ElevenLabs)', () => {
     it('lève une erreur sur réponse HTTP non-OK', async () => {
       global.fetch = jest.fn().mockResolvedValue(makeStreamResponse([], false));
       await expect(synthesizeStream('test', () => {})).rejects.toThrow('ElevenLabs 401');
+    });
+
+    it('convertit MP3 via ffmpeg si Content-Type est audio/mpeg (FIX 2)', async () => {
+      const { spawn } = require('child_process');
+      spawn.mockClear();
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: { get: jest.fn().mockReturnValue('audio/mpeg') },
+        body: {
+          [Symbol.asyncIterator]: async function* () {
+            yield Buffer.from([0xff, 0xfb, 0x90, 0x00]); // faux header MP3
+          }
+        },
+        text: jest.fn().mockResolvedValue('')
+      });
+      const chunks = [];
+      await synthesizeStream('test MP3 fallback', chunk => chunks.push(chunk));
+      expect(spawn).toHaveBeenCalledWith('ffmpeg', expect.arrayContaining(['-acodec', 'pcm_mulaw']));
+      expect(chunks.length).toBeGreaterThan(0);
     });
   });
 });

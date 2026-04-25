@@ -1,5 +1,6 @@
 const http = require('http');
 const path = require('path');
+const { exec } = require('child_process');
 const express = require('express');
 const config = require('./config');
 const logger = require('./utils/logger');
@@ -62,6 +63,10 @@ setupMediaStream(server);
 
 server.listen(config.server.port, () => {
   logger.info('Serveur démarré', { port: config.server.port, env: process.env.NODE_ENV || 'development' });
+  exec('ffmpeg -version', (err) => {
+    if (err) console.error('[STARTUP] ffmpeg NOT found — TTS MP3 fallback will fail');
+    else console.log('[STARTUP] ffmpeg OK');
+  });
 });
 
 module.exports = { app, server };
