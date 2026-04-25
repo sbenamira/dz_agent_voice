@@ -25,6 +25,7 @@ function makeStreamResponse(chunks, ok = true) {
   return {
     ok,
     status: ok ? 200 : 401,
+    headers: { get: jest.fn().mockReturnValue('audio/basic') },
     body: { getReader: jest.fn().mockReturnValue(reader) },
     text: jest.fn().mockResolvedValue(ok ? '' : 'Unauthorized')
   };

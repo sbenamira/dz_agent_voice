@@ -8,23 +8,7 @@ function cacheKey(text) {
   return text.slice(0, 100);
 }
 
-// Retourne l'offset des données audio dans un buffer WAV, ou 0 si pas de header RIFF,
-// ou null si le header est incomplet (il faut accumuler plus de données).
-function wavDataOffset(buf) {
-  if (buf.length === 0) return null;
-  if (buf[0] !== 0x52) return 0;  // pas 'R' → certainement pas RIFF, données raw
-  if (buf.length < 4) return null; // commence par 'R', attendre 4 bytes pour confirmer
-  if (buf.slice(0, 4).toString('ascii') !== 'RIFF') return 0; // pas de WAV header
-  let pos = 12;
-  while (pos + 8 <= buf.length) {
-    const id = buf.slice(pos, pos + 4).toString('ascii');
-    if (id === 'data') return pos + 8; // sauter 'data' (4) + taille (4)
-    pos += 8 + buf.readUInt32LE(pos + 4);
-  }
-  return null; // header RIFF incomplet, attendre plus de données
-}
-
-// Streaming ElevenLabs → onChunk(Buffer mulaw) pour chaque chunk reçu
+// Streaming ElevenLabs ulaw_8000 → onChunk(Buffer mulaw) pour chaque chunk reçu
 async function synthesizeStream(text, onChunk) {
   if (!text || !text.trim()) return;
 
@@ -68,8 +52,6 @@ async function synthesizeStream(text, onChunk) {
 
   const chunks = [];
   const reader = response.body.getReader();
-  let headerParsed = false;
-  let accum = Buffer.alloc(0);
 
   try {
     while (true) {
@@ -77,22 +59,14 @@ async function synthesizeStream(text, onChunk) {
       if (done) break;
       if (!value || !value.length) continue;
 
-      let chunk = Buffer.from(value);
-
-      if (!headerParsed) {
-        accum = Buffer.concat([accum, chunk]);
-        const offset = wavDataOffset(accum);
-        if (offset === null) continue;        // header RIFF incomplet, accumuler
-        headerParsed = true;
-        chunk = accum.slice(offset);          // données PCM mulaw après le header
+      const chunk = Buffer.from(value);
+      if (firstChunkMs === null) {
+        firstChunkMs = Date.now() - t0;
+        console.log(`[TTS ElevenLabs] Content-Type: ${response.headers?.get?.('content-type') || 'unknown'}, premier byte: 0x${chunk[0].toString(16).padStart(2, '0')}`);
       }
-
-      if (chunk.length > 0) {
-        if (firstChunkMs === null) firstChunkMs = Date.now() - t0;
-        chunks.push(chunk);
-        totalBytes += chunk.length;
-        onChunk(chunk);
-      }
+      chunks.push(chunk);
+      totalBytes += chunk.length;
+      onChunk(chunk);
     }
   } finally {
     reader.releaseLock();
