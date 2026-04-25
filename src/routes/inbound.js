@@ -38,6 +38,7 @@ function setupMediaStream(server) {
     let callStartTime = Date.now();
     let conversationHistory = [];
     let isProcessing = false;
+    let callLanguage = null; // verrouillé au premier transcript
 
     function sendAudio(mulawBuffer) {
       if (ws.readyState !== WebSocket.OPEN || !streamSid) return;
@@ -52,6 +53,12 @@ function setupMediaStream(server) {
       if (isProcessing || !transcript.trim()) return;
       isProcessing = true;
 
+      // Détecte et verrouille la langue au premier tour
+      if (!callLanguage) {
+        callLanguage = agent.isArabic(transcript) ? 'ar' : 'fr';
+        logger.info('Langue verrouillée', { callLanguage, callId });
+      }
+
       try {
         let buffer = '';
         const spokenParts = [];
@@ -61,6 +68,7 @@ function setupMediaStream(server) {
           subjectId: null,
           userMessage: transcript,
           history: conversationHistory,
+          langue: callLanguage,
           onChunk: async (chunk) => {
             buffer += chunk;
             if (/[.!?،؟]\s*$/.test(buffer) || buffer.length > 100) {

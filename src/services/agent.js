@@ -21,11 +21,12 @@ function selectPrompt(text) {
 }
 
 // Stream une réponse Groq (llama-3.3-70b) et appelle onChunk pour chaque fragment
-async function streamResponse({ callId, subjectId, userMessage, history = [], onChunk }) {
+// langue : 'ar'|'fr' verrouillé au premier tour par inbound.js (null = détection auto)
+async function streamResponse({ callId, subjectId, userMessage, history = [], langue = null, onChunk }) {
   try {
-    const langue = isArabic(userMessage) ? 'ar' : 'fr';
+    const langueDetectee = langue || (isArabic(userMessage) ? 'ar' : 'fr');
 
-    await db.insertTranscript({ call_id: callId, role: 'client', message: userMessage, langue });
+    await db.insertTranscript({ call_id: callId, role: 'client', message: userMessage, langue: langueDetectee });
 
     let ragContext = '';
     if (subjectId) {
@@ -33,7 +34,7 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], on
     }
 
     const REMINDER = '\n\nIMPORTANT: Si tu ne sais pas quoi dire, réponds UNIQUEMENT: "واش تحب؟" Jamais de mot inventé. Jamais d\'arabe standard.';
-    const systemPrompt = selectPrompt(userMessage) + REMINDER +
+    const systemPrompt = (langueDetectee === 'ar' ? promptDarija : promptFr) + REMINDER +
       (ragContext ? `\n\n## CONTEXTE DISPONIBLE\n${ragContext}` : '');
 
     const messages = [
@@ -60,9 +61,9 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], on
       }
     }
 
-    await db.insertTranscript({ call_id: callId, role: 'agent', message: fullResponse, langue });
+    await db.insertTranscript({ call_id: callId, role: 'agent', message: fullResponse, langue: langueDetectee });
 
-    logger.info('Réponse agent générée', { callId, langue, chars: fullResponse.length });
+    logger.info('Réponse agent générée', { callId, langue: langueDetectee, chars: fullResponse.length });
     return fullResponse;
   } catch (err) {
     logger.error('streamResponse', { error: err.message, callId });
