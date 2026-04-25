@@ -6,7 +6,6 @@ const db = require('../services/database');
 const agent = require('../services/agent');
 const { createDeepgramSession } = require('../services/stt');
 const { synthesizeStream } = require('../services/tts');
-const { mulawToLinear16 } = require('../utils/audio');
 
 // Stocke le numéro appelant entre le webhook POST et le WebSocket start
 const pendingCallers = new Map();
@@ -178,8 +177,7 @@ function setupMediaStream(server) {
 
         if (msg.event === 'media' && dgSession) {
           if (!isKarimSpeaking) {
-            const mulaw = Buffer.from(msg.media.payload, 'base64');
-            dgSession.send(mulawToLinear16(mulaw));
+            dgSession.send(Buffer.from(msg.media.payload, 'base64'));
           }
         }
 
