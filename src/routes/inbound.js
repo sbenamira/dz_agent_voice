@@ -38,7 +38,7 @@ function setupMediaStream(server) {
     let callStartTime = Date.now();
     let conversationHistory = [];
     let isProcessing = false;
-    let callLanguage = null; // verrouillé au premier transcript
+    let callLanguage = 'ar'; // darija par défaut — marché algérien
 
     function sendAudio(mulawBuffer) {
       if (ws.readyState !== WebSocket.OPEN || !streamSid) return;
@@ -53,11 +53,6 @@ function setupMediaStream(server) {
       if (isProcessing || !transcript.trim()) return;
       isProcessing = true;
 
-      // Détecte et verrouille la langue au premier tour
-      if (!callLanguage) {
-        callLanguage = agent.isArabic(transcript) ? 'ar' : 'fr';
-        logger.info('Langue verrouillée', { callLanguage, callId });
-      }
 
       try {
         let buffer = '';
