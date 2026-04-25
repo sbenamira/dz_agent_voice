@@ -3,7 +3,7 @@ const config = require('../config');
 const logger = require('../utils/logger');
 
 // Crée une session Deepgram en streaming avec KeepAlive et reconnexion automatique
-function createDeepgramSession(onTranscript, onError) {
+function createDeepgramSession(onTranscript, onError, onInterim) {
   let keepAliveTimer = null;
   let activeConnection = null;
   let closed = false;
@@ -22,7 +22,7 @@ function createDeepgramSession(onTranscript, onError) {
       channels: 1,
       punctuate: true,
       interim_results: true,
-      endpointing: 300
+      endpointing: 150
     });
     activeConnection = connection;
 
@@ -79,6 +79,8 @@ function createDeepgramSession(onTranscript, onError) {
           if (data.is_final && transcript.trim()) {
             logger.info('Transcript reçu', { transcript: transcript.slice(0, 50) });
             onTranscript(transcript.trim());
+          } else if (!data.is_final && transcript.trim() && onInterim) {
+            onInterim(transcript.trim());
           }
         } catch (err) {
           logger.error('Erreur traitement transcript', { error: err.message });

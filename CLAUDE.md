@@ -7,9 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Agent vocal IA pour le marché algérien (darija algérienne + français). Twilio reçoit l'appel et ouvre un WebSocket audio mulaw 8kHz vers ce serveur, qui pipe STT → LLM → TTS en streaming.
 
 **Stack actuelle (2026-04) :**
-- STT : Deepgram nova-2, `language=multi`, `encoding=mulaw` — connecte mais transcrit mal l'arabe. Migration Gladia prévue pour Arabic natif.
-- LLM : Groq `llama-3.3-70b-versatile` (streaming, ~400ms)
-- TTS : Microsoft Edge TTS `ar-DZ-IsmaelNeural` via `msedge-tts` + ffmpeg pipe → mulaw
+- STT : Deepgram **nova-3**, `language=ar`, `encoding=mulaw`, `endpointing=150ms` ✅
+- LLM : Groq `llama-3.3-70b-versatile` (~400ms) — répond en JSON `{"speak":"...","display":"..."}`
+- TTS : Microsoft Edge TTS `ar-DZ-IsmaelNeural` via `msedge-tts` + ffmpeg pipe → mulaw streaming ✅
+- Fillers audio : `src/fillers.js` — 3 clips pré-générés au démarrage, joués avant le LLM ✅
+- Barge-in : interim Deepgram → event Twilio `clear` pour couper Karim ✅
 - DB : Supabase (PostgreSQL + pgvector)
 - Hébergement : Render.com (deploy auto sur push `main`)
 
@@ -43,7 +45,13 @@ Fichier central : `src/routes/inbound.js` — gère tout le cycle de vie d'un ap
 
 **TTS streaming** (`services/tts.js`) : `synthesizeStream(text, onChunk)` pipe msedge-tts → ffmpeg avec `-fflags nobuffer` pour envoyer le premier chunk mulaw sans attendre la fin de la synthèse.
 
-**Deepgram KeepAlive** (`services/stt.js`) : ping JSON `{type:'KeepAlive'}` toutes les 5s. Max 3 reconnexions sur 1006. `language=ar` donne systématiquement 1006 — seul `language=multi` connecte.
+**Deepgram KeepAlive** (`services/stt.js`) : ping JSON `{type:'KeepAlive'}` toutes les 5s. Max 3 reconnexions sur 1006. Nova-3 + `language=ar` fonctionne (nova-2 + `language=ar` donnait 1006).
+
+**Fillers** (`src/fillers.js`) : `initFillers()` appelé au chargement du module `inbound.js`. `getRandomFiller()` retourne un Buffer mulaw aléatoire ou `null` si pas encore prêt.
+
+**Barge-in** (`inbound.js`) : flag `isBargingIn` + version counter `activeTurnId`. Interim transcript → `ws.send({event:'clear', streamSid})`. Le tour suivant force `isProcessing=false` si `isBargingIn=true`.
+
+**Format JSON agent** (`services/agent.js`) : le LLM répond `{"speak":"...","display":"..."}`. `streamResponse` parse le JSON, extrait `speak`, appelle `onChunk(speakText)` une seule fois après le stream complet (pas de stop tokens).
 
 **pendingCallers** (`inbound.js`) : Map `CallSid → numéro appelant` entre le POST Twilio et l'ouverture du WebSocket.
 

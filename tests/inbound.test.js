@@ -3,9 +3,6 @@ process.env.DEEPGRAM_API_KEY = 'test';
 process.env.TWILIO_ACCOUNT_SID = 'test';
 process.env.TWILIO_AUTH_TOKEN = 'test';
 process.env.TWILIO_PHONE_NUMBER = '+1234567890';
-process.env.DEEPGRAM_API_KEY = 'test';
-process.env.ELEVENLABS_API_KEY = 'test';
-process.env.ELEVENLABS_VOICE_ID = 'test';
 process.env.OPENAI_API_KEY = 'test';
 process.env.SUPABASE_URL = 'https://test.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test';
@@ -25,13 +22,10 @@ jest.mock('../src/services/stt', () => ({
   createDeepgramSession: jest.fn().mockReturnValue({ send: jest.fn(), close: jest.fn() })
 }));
 jest.mock('../src/services/tts', () => ({
+  synthesize: jest.fn().mockResolvedValue(Buffer.from([0x7f])),
   synthesizeStream: jest.fn().mockImplementation(async (text, onChunk) => {
     onChunk(Buffer.from([0x7f]));
   })
-}));
-jest.mock('@deepgram/sdk', () => ({
-  createClient: jest.fn(),
-  LiveTranscriptionEvents: { Open: 'open', Transcript: 'transcript', Error: 'error', Close: 'close' }
 }));
 
 const express = require('express');

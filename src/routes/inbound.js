@@ -6,6 +6,8 @@ const db = require('../services/database');
 const agent = require('../services/agent');
 const { createDeepgramSession } = require('../services/stt');
 const { synthesizeStream } = require('../services/tts');
+const fillers = require('../fillers');
+fillers.initFillers().catch(err => logger.warn('Fillers init', { error: err.message }));
 
 // Stocke le numéro appelant entre le webhook POST et le WebSocket start
 const pendingCallers = new Map();
@@ -50,6 +52,8 @@ function setupMediaStream(server) {
     let ttsDurations = [];
     let totalDurations = [];
     let isKarimSpeaking = false; // mute Deepgram pendant le TTS
+    let isBargingIn = false;     // FIX 4 : l'utilisateur interrompt Karim
+    let activeTurnId = 0;        // FIX 4 : version counter pour éviter le double-reset
 
     function sendAudio(mulawBuffer) {
       if (ws.readyState !== WebSocket.OPEN || !streamSid) return;
@@ -61,9 +65,17 @@ function setupMediaStream(server) {
     }
 
     async function handleTranscript(transcript) {
-      if (isProcessing || !transcript.trim()) return;
+      if (!transcript.trim()) return;
+      if (isProcessing && !isBargingIn) return; // barge-in autorisé à interrompre
       isProcessing = true;
+      isBargingIn = false;
+      isKarimSpeaking = false; // annule le TTS interrompu
+      const myTurnId = ++activeTurnId;
       turnCount++;
+
+      // FIX 2 : filler immédiat pour masquer la latence LLM
+      const fillerChunk = fillers.getRandomFiller();
+      if (fillerChunk && fillerChunk.length) sendAudio(fillerChunk);
       const turnStart = Date.now();
       let ttsDurationTurn = 0;
       let ttsOutputBytesTurn = 0;
@@ -137,7 +149,7 @@ function setupMediaStream(server) {
       } catch (err) {
         logger.error('handleTranscript', { error: err.message, callId });
       } finally {
-        isProcessing = false;
+        if (activeTurnId === myTurnId) isProcessing = false; // ne pas écraser un tour plus récent
       }
     }
 
@@ -163,7 +175,15 @@ function setupMediaStream(server) {
 
           dgSession = createDeepgramSession(
             (transcript) => handleTranscript(transcript),
-            (err) => logger.error('Deepgram erreur', { error: err.message, callId })
+            (err) => logger.error('Deepgram erreur', { error: err.message, callId }),
+            // FIX 4 : barge-in — interim transcript pendant que Karim parle
+            (interimText) => {
+              if (isKarimSpeaking && !isBargingIn && ws.readyState === WebSocket.OPEN && streamSid) {
+                isBargingIn = true;
+                ws.send(JSON.stringify({ event: 'clear', streamSid }));
+                logger.info('Barge-in détecté', { callId, text: interimText.slice(0, 30) });
+              }
+            }
           );
 
           logger.info('Appel inbound démarré', { callId, twilioCallSid });

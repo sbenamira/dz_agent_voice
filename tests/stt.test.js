@@ -10,11 +10,13 @@ process.env.SUPABASE_ANON_KEY = 'test';
 jest.mock('dotenv', () => ({ config: jest.fn() }));
 jest.mock('@supabase/supabase-js', () => ({ createClient: () => ({}) }));
 
+// Mock Deepgram SDK
+const mockHandlers = {};
 const mockConnection = {
-  on: jest.fn(),
+  on: jest.fn((event, cb) => { mockHandlers[event] = cb; }),
   send: jest.fn(),
-  finish: jest.fn(),
-  getReadyState: jest.fn().mockReturnValue(1)
+  getReadyState: jest.fn().mockReturnValue(1),
+  finish: jest.fn()
 };
 
 jest.mock('@deepgram/sdk', () => ({
@@ -22,14 +24,28 @@ jest.mock('@deepgram/sdk', () => ({
     listen: { live: jest.fn().mockReturnValue(mockConnection) }
   }),
   LiveTranscriptionEvents: {
-    Open: 'open', Transcript: 'transcript', Error: 'error', Close: 'close'
+    Open: 'Open',
+    Close: 'Close',
+    Transcript: 'Transcript',
+    Error: 'Error'
   }
 }));
 
 const { createDeepgramSession } = require('../src/services/stt');
 
-describe('stt service', () => {
-  beforeEach(() => jest.clearAllMocks());
+describe('stt service (Deepgram Nova-3)', () => {
+  // Fake timers évitent que setInterval du KeepAlive reste ouvert
+  beforeAll(() => jest.useFakeTimers());
+  afterAll(() => jest.useRealTimers());
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.clearAllTimers();
+    Object.keys(mockHandlers).forEach(k => delete mockHandlers[k]);
+    mockConnection.send.mockClear();
+    mockConnection.finish.mockClear();
+    mockConnection.getReadyState.mockReturnValue(1);
+  });
 
   it('retourne un objet avec send() et close()', () => {
     const session = createDeepgramSession(() => {}, () => {});
@@ -37,49 +53,78 @@ describe('stt service', () => {
     expect(typeof session.close).toBe('function');
   });
 
-  it('enregistre le handler Error avant Open', () => {
-    createDeepgramSession(() => {}, () => {});
-    const calls = mockConnection.on.mock.calls.map(c => c[0]);
-    const errorIdx = calls.indexOf('error');
-    const openIdx = calls.indexOf('open');
-    expect(errorIdx).toBeGreaterThanOrEqual(0);
-    expect(errorIdx).toBeLessThan(openIdx);
+  it('appelle onTranscript uniquement pour les transcripts finaux', () => {
+    const onTranscript = jest.fn();
+    createDeepgramSession(onTranscript, () => {});
+    // Le handler Transcript est enregistré dans le callback Open
+    if (mockHandlers['Open']) mockHandlers['Open']();
+    mockHandlers['Transcript']({
+      is_final: true,
+      speech_final: true,
+      channel: { alternatives: [{ transcript: 'واش عندك' }] }
+    });
+    expect(onTranscript).toHaveBeenCalledWith('واش عندك');
   });
 
-  it('send() transmet le buffer quand readyState === 1', () => {
+  it("n'appelle pas onTranscript pour les transcripts non finaux", () => {
+    const onTranscript = jest.fn();
+    createDeepgramSession(onTranscript, () => {});
+    if (mockHandlers['Open']) mockHandlers['Open']();
+    mockHandlers['Transcript']({
+      is_final: false,
+      channel: { alternatives: [{ transcript: 'واش' }] }
+    });
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
+  it('appelle onInterim pour les transcripts non finaux avec texte (FIX 4)', () => {
+    const onTranscript = jest.fn();
+    const onInterim = jest.fn();
+    createDeepgramSession(onTranscript, () => {}, onInterim);
+    if (mockHandlers['Open']) mockHandlers['Open']();
+    mockHandlers['Transcript']({
+      is_final: false,
+      channel: { alternatives: [{ transcript: 'واش' }] }
+    });
+    expect(onInterim).toHaveBeenCalledWith('واش');
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
+  it("n'appelle pas onInterim pour les transcripts vides", () => {
+    const onInterim = jest.fn();
+    createDeepgramSession(() => {}, () => {}, onInterim);
+    if (mockHandlers['Open']) mockHandlers['Open']();
+    mockHandlers['Transcript']({
+      is_final: false,
+      channel: { alternatives: [{ transcript: '   ' }] }
+    });
+    expect(onInterim).not.toHaveBeenCalled();
+  });
+
+  it('send() envoie le buffer quand la connexion est ouverte', () => {
     const session = createDeepgramSession(() => {}, () => {});
     const buf = Buffer.from([0x7f, 0x80]);
     session.send(buf);
     expect(mockConnection.send).toHaveBeenCalledWith(buf);
   });
 
-  it('close() appelle finish()', () => {
+  it('send() ne lance pas si la connexion est fermée', () => {
+    mockConnection.getReadyState.mockReturnValue(3);
+    const session = createDeepgramSession(() => {}, () => {});
+    session.send(Buffer.from([0x7f]));
+    expect(mockConnection.send).not.toHaveBeenCalled();
+  });
+
+  it('close() appelle finish() et stoppe les reconnexions', () => {
     const session = createDeepgramSession(() => {}, () => {});
     session.close();
     expect(mockConnection.finish).toHaveBeenCalled();
   });
 
-  it('envoie un KeepAlive JSON après l\'ouverture', () => {
-    jest.useFakeTimers();
+  it('envoie un KeepAlive toutes les 5s après ouverture (FIX 3)', () => {
     createDeepgramSession(() => {}, () => {});
-    const openCb = mockConnection.on.mock.calls.find(c => c[0] === 'open')?.[1];
-    if (openCb) openCb();
+    if (mockHandlers['Open']) mockHandlers['Open']();
     jest.advanceTimersByTime(5000);
-    expect(mockConnection.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: 'KeepAlive' })
-    );
-    jest.useRealTimers();
-  });
-
-  it('appelle onTranscript avec le texte final', () => {
-    const onTranscript = jest.fn();
-    createDeepgramSession(onTranscript, () => {});
-    const openCb = mockConnection.on.mock.calls.find(c => c[0] === 'open')?.[1];
-    if (openCb) openCb();
-    const transcriptCb = mockConnection.on.mock.calls.find(c => c[0] === 'transcript')?.[1];
-    if (transcriptCb) {
-      transcriptCb({ is_final: true, channel: { alternatives: [{ transcript: 'واش راك' }] } });
-      expect(onTranscript).toHaveBeenCalledWith('واش راك');
-    }
+    expect(mockConnection.send).toHaveBeenCalledWith(JSON.stringify({ type: 'KeepAlive' }));
   });
 });

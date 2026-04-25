@@ -33,7 +33,7 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], la
       ragContext = await rag.searchContext(subjectId, userMessage);
     }
 
-    const REMINDER = '\n\nIMPORTANT: Si tu ne sais pas quoi dire, réponds UNIQUEMENT: "واش تحب؟" Jamais de mot inventé. Jamais d\'arabe standard.';
+    const REMINDER = '\n\nIMPORTANT: Réponds UNIQUEMENT avec le JSON demandé, sans texte avant ou après. Exemple: {"speak":"واش تحب؟","display":"واش تحب؟"}';
     const systemPrompt = (langueDetectee === 'ar' ? promptDarija : promptFr) + REMINDER +
       (ragContext ? `\n\n## CONTEXTE DISPONIBLE\n${ragContext}` : '');
 
@@ -48,23 +48,29 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], la
       messages,
       max_tokens: 120,
       temperature: 0.3,
-      stop: ['.', '؟', '!', '،\n'],
       stream: true
+      // Pas de stop tokens — évite de tronquer le JSON avant la fermeture d'accolade
     });
 
     let fullResponse = '';
     for await (const chunk of stream) {
       const text = chunk.choices[0]?.delta?.content || '';
-      if (text) {
-        fullResponse += text;
-        if (onChunk) onChunk(text);
-      }
+      if (text) fullResponse += text;
     }
 
-    await db.insertTranscript({ call_id: callId, role: 'agent', message: fullResponse, langue: langueDetectee });
+    // Extraire le texte parlé du JSON ; fallback sur la réponse brute
+    let speakText = fullResponse.trim();
+    try {
+      const parsed = JSON.parse(fullResponse.trim());
+      if (parsed && parsed.speak) speakText = parsed.speak.trim();
+    } catch (_) {}
 
-    logger.info('Réponse agent générée', { callId, langue: langueDetectee, chars: fullResponse.length });
-    return fullResponse;
+    if (onChunk) onChunk(speakText);
+
+    await db.insertTranscript({ call_id: callId, role: 'agent', message: speakText, langue: langueDetectee });
+
+    logger.info('Réponse agent générée', { callId, langue: langueDetectee, chars: speakText.length });
+    return speakText;
   } catch (err) {
     logger.error('streamResponse', { error: err.message, callId });
     throw err;
