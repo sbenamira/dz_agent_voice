@@ -168,7 +168,7 @@ function setupMediaStream(server) {
 
           logger.info('Appel inbound démarré', { callId, twilioCallSid });
 
-          const accueil = 'السلام عليكم سيدي، نشالله تكون بخير. أنا كريم، كيفاش نقدر نعاونك اليوم؟';
+          const accueil = 'أهلاً وسهلاً سيدي، معك كريم من Konfident. كيفاش نقدر نعاونك اليوم؟';
           isKarimSpeaking = true;
           synthesizeStream(accueil, sendAudio)
             .catch(err => logger.error('Accueil TTS', { error: err.message }))
