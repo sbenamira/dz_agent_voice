@@ -66,6 +66,9 @@ async function synthesizeStream(text, onChunk) {
   return new Promise((resolve, reject) => {
     const ffmpeg = spawn('ffmpeg', [
       '-loglevel', 'error',
+      '-fflags', 'nobuffer',
+      '-probesize', '32',
+      '-analyzeduration', '0',
       '-f', 'mp3', '-i', 'pipe:0',
       '-ar', '8000', '-ac', '1',
       '-acodec', 'pcm_mulaw',
