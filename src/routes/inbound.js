@@ -5,7 +5,7 @@ const logger = require('../utils/logger');
 const db = require('../services/database');
 const agent = require('../services/agent');
 const { createDeepgramSession } = require('../services/stt');
-const { synthesize } = require('../services/tts');
+const { synthesizeStream } = require('../services/tts');
 const { generateTwiMLStream } = require('../services/telephony');
 
 const router = express.Router();
@@ -67,11 +67,8 @@ function setupMediaStream(server) {
               const phrase = buffer.trim();
               buffer = '';
               if (phrase) {
-                const audio = await synthesize(phrase).catch(err => {
-                  logger.error('TTS chunk', { error: err.message });
-                  return Buffer.alloc(0);
-                });
-                if (audio.length) sendAudio(audio);
+                await synthesizeStream(phrase, chunk => { if (chunk.length) sendAudio(chunk); })
+                  .catch(err => logger.error('TTS chunk', { error: err.message }));
                 spokenParts.push(phrase);
               }
             }
@@ -79,8 +76,7 @@ function setupMediaStream(server) {
         });
 
         if (buffer.trim()) {
-          const audio = await synthesize(buffer.trim()).catch(() => Buffer.alloc(0));
-          if (audio.length) sendAudio(audio);
+          await synthesizeStream(buffer.trim(), chunk => { if (chunk.length) sendAudio(chunk); }).catch(() => {});
           spokenParts.push(buffer.trim());
         }
 
@@ -115,7 +111,7 @@ function setupMediaStream(server) {
           logger.info('Appel inbound démarré', { callId, twilioCallSid });
 
           const accueil = 'السلام عليكم سيدي، نشالله تكون بخير. أنا كريم، كيفاش نقدر نعاونك اليوم؟';
-          synthesize(accueil).then(sendAudio).catch(err => logger.error('Accueil TTS', { error: err.message }));
+          synthesizeStream(accueil, sendAudio).catch(err => logger.error('Accueil TTS', { error: err.message }));
         }
 
         if (msg.event === 'media' && dgSession) {

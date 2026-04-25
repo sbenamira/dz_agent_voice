@@ -1,28 +1,26 @@
 const fs = require('fs');
 const path = require('path');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Groq = require('groq-sdk');
 const config = require('../config');
 const logger = require('../utils/logger');
 const rag = require('./rag');
 const db = require('./database');
 
-const genAI = new GoogleGenerativeAI(config.google.apiKey);
+const groq = new Groq({ apiKey: config.groq.apiKey });
 
 const promptDarija = fs.readFileSync(path.join(__dirname, '../prompts/karim_darija.txt'), 'utf8');
 const promptFr = fs.readFileSync(path.join(__dirname, '../prompts/karim_fr.txt'), 'utf8');
 
-// Détecte si le texte est majoritairement en arabe (darija)
 function isArabic(text) {
   const arabicChars = (text.match(/[؀-ۿ]/g) || []).length;
   return arabicChars > text.length * 0.2;
 }
 
-// Sélectionne le prompt selon la langue détectée
 function selectPrompt(text) {
   return isArabic(text) ? promptDarija : promptFr;
 }
 
-// Stream une réponse Gemini 2.5 Flash et appelle onChunk pour chaque fragment
+// Stream une réponse Groq (llama-3.3-70b) et appelle onChunk pour chaque fragment
 async function streamResponse({ callId, subjectId, userMessage, history = [], onChunk }) {
   try {
     const langue = isArabic(userMessage) ? 'ar' : 'fr';
@@ -37,24 +35,23 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], on
     const systemPrompt = selectPrompt(userMessage) +
       (ragContext ? `\n\n## CONTEXTE DISPONIBLE\n${ragContext}` : '');
 
-    const model = genAI.getGenerativeModel({
-      model: config.google.model,
-      systemInstruction: systemPrompt,
-      generationConfig: { maxOutputTokens: 300 }
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...history.map(h => ({ role: h.role, content: h.content })),
+      { role: 'user', content: userMessage }
+    ];
+
+    const stream = await groq.chat.completions.create({
+      model: config.groq.model,
+      messages,
+      max_tokens: 60,
+      temperature: 0.7,
+      stream: true
     });
 
-    // Convertir l'historique : 'assistant' → 'model' pour l'API Gemini
-    const geminiHistory = history.map(h => ({
-      role: h.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: h.content }]
-    }));
-
-    const chat = model.startChat({ history: geminiHistory });
-    const result = await chat.sendMessageStream(userMessage);
-
     let fullResponse = '';
-    for await (const chunk of result.stream) {
-      const text = chunk.text();
+    for await (const chunk of stream) {
+      const text = chunk.choices[0]?.delta?.content || '';
       if (text) {
         fullResponse += text;
         if (onChunk) onChunk(text);

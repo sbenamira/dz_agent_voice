@@ -1,4 +1,4 @@
-process.env.GOOGLE_API_KEY = 'test';
+process.env.GROQ_API_KEY = 'test';
 process.env.TWILIO_ACCOUNT_SID = 'test';
 process.env.TWILIO_AUTH_TOKEN = 'test';
 process.env.TWILIO_PHONE_NUMBER = '+1234567890';
@@ -12,20 +12,16 @@ jest.mock('@supabase/supabase-js', () => ({ createClient: () => ({}) }));
 
 const mockStream = {
   [Symbol.asyncIterator]: async function* () {
-    yield { text: () => 'واخا ' };
-    yield { text: () => 'سيدي.' };
+    yield { choices: [{ delta: { content: 'واخا ' } }] };
+    yield { choices: [{ delta: { content: 'سيدي.' } }] };
   }
 };
 
-const mockSendMessageStream = jest.fn().mockResolvedValue({ stream: mockStream });
-const mockStartChat = jest.fn().mockReturnValue({ sendMessageStream: mockSendMessageStream });
-const mockGetGenerativeModel = jest.fn().mockReturnValue({ startChat: mockStartChat });
+const mockCreate = jest.fn().mockResolvedValue(mockStream);
 
-jest.mock('@google/generative-ai', () => ({
-  GoogleGenerativeAI: jest.fn().mockImplementation(() => ({
-    getGenerativeModel: mockGetGenerativeModel
-  }))
-}));
+jest.mock('groq-sdk', () => jest.fn().mockImplementation(() => ({
+  chat: { completions: { create: mockCreate } }
+})));
 
 jest.mock('../src/services/rag', () => ({
   searchContext: jest.fn().mockResolvedValue('Contexte RAG test')
@@ -94,7 +90,7 @@ describe('agent service', () => {
       expect(insertTranscript).toHaveBeenCalledWith(expect.objectContaining({ role: 'client' }));
     });
 
-    it('convertit l\'historique assistant→model pour Gemini', async () => {
+    it('passe le system prompt et l\'historique à Groq', async () => {
       await streamResponse({
         callId: 'call-uuid',
         subjectId: null,
@@ -105,12 +101,10 @@ describe('agent service', () => {
         ],
         onChunk: () => {}
       });
-      expect(mockStartChat).toHaveBeenCalledWith({
-        history: [
-          { role: 'user', parts: [{ text: 'Salam' }] },
-          { role: 'model', parts: [{ text: 'Salam alikoum' }] }
-        ]
-      });
+      const callArg = mockCreate.mock.calls[0][0];
+      expect(callArg.messages[0].role).toBe('system');
+      expect(callArg.messages[1]).toEqual({ role: 'user', content: 'Salam' });
+      expect(callArg.messages[2]).toEqual({ role: 'assistant', content: 'Salam alikoum' });
     });
   });
 });

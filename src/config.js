@@ -3,7 +3,7 @@ require('dotenv').config();
 const logger = require('./utils/logger');
 
 const REQUIRED_KEYS = [
-  'GOOGLE_API_KEY',
+  'GROQ_API_KEY',
   'TWILIO_ACCOUNT_SID',
   'TWILIO_AUTH_TOKEN',
   'TWILIO_PHONE_NUMBER',
@@ -24,9 +24,9 @@ function validate() {
 validate();
 
 module.exports = {
-  google: {
-    apiKey: process.env.GOOGLE_API_KEY,
-    model: 'gemini-2.5-flash'
+  groq: {
+    apiKey: process.env.GROQ_API_KEY,
+    model: 'llama-3.3-70b-versatile'
   },
   twilio: {
     accountSid: process.env.TWILIO_ACCOUNT_SID,

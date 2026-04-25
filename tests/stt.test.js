@@ -1,4 +1,4 @@
-process.env.GOOGLE_API_KEY = 'test';
+process.env.GROQ_API_KEY = 'test';
 process.env.TWILIO_ACCOUNT_SID = 'test';
 process.env.TWILIO_AUTH_TOKEN = 'test';
 process.env.TWILIO_PHONE_NUMBER = '+1234567890';
