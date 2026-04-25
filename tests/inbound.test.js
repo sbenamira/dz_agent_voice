@@ -1,5 +1,7 @@
 process.env.GROQ_API_KEY = 'test';
 process.env.DEEPGRAM_API_KEY = 'test';
+process.env.ELEVENLABS_API_KEY = 'test';
+process.env.ELEVENLABS_VOICE_ID = 'test';
 process.env.TWILIO_ACCOUNT_SID = 'test';
 process.env.TWILIO_AUTH_TOKEN = 'test';
 process.env.TWILIO_PHONE_NUMBER = '+1234567890';
