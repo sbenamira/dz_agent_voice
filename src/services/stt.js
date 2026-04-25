@@ -1,7 +1,6 @@
 const { createClient, LiveTranscriptionEvents } = require('@deepgram/sdk');
 const config = require('../config');
 const logger = require('../utils/logger');
-const { mulawToLinear16 } = require('../utils/audio');
 
 // Crée une session Deepgram en streaming avec KeepAlive et reconnexion automatique
 function createDeepgramSession(onTranscript, onError) {
@@ -17,8 +16,8 @@ function createDeepgramSession(onTranscript, onError) {
     const deepgram = createClient(config.deepgram.apiKey);
     const connection = deepgram.listen.live({
       model: 'nova-2',
-      language: 'ar',
-      encoding: 'linear16',
+      language: 'multi',
+      encoding: 'mulaw',
       sample_rate: 8000,
       channels: 1,
       endpointing: 300,
@@ -90,10 +89,10 @@ function createDeepgramSession(onTranscript, onError) {
   initConnection();
 
   return {
-    send(mulawBuffer) {
+    send(audioBuffer) {
       try {
         if (activeConnection && activeConnection.getReadyState() === 1) {
-          activeConnection.send(mulawToLinear16(mulawBuffer));
+          activeConnection.send(audioBuffer);
         }
       } catch (err) {
         logger.error('Deepgram send', { error: err.message });
