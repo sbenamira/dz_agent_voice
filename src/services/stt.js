@@ -15,13 +15,14 @@ function createDeepgramSession(onTranscript, onError) {
 
     const deepgram = createClient(config.deepgram.apiKey);
     const connection = deepgram.listen.live({
-      model: 'nova-2',
-      language: 'multi',
+      model: 'nova-3',
+      language: 'ar',
       encoding: 'mulaw',
       sample_rate: 8000,
       channels: 1,
-      endpointing: 300,
-      interim_results: false
+      punctuate: true,
+      interim_results: true,
+      endpointing: 300
     });
     activeConnection = connection;
 
