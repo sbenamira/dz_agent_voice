@@ -20,8 +20,20 @@ function createDeepgramSession(onTranscript, onError) {
 
   // Enregistrer l'handler d'erreur avant Open pour éviter ERR_UNHANDLED_ERROR si Deepgram échoue avant l'ouverture
   connection.on(LiveTranscriptionEvents.Error, err => {
-    logger.error('Deepgram erreur', { error: err.message });
+    const msg = err?.message || err?.description || err?.reason
+      || (err ? JSON.stringify(err) : 'unknown');
+    logger.error('Deepgram erreur', { error: msg, type: err?.type, code: err?.code });
     if (onError) onError(err);
+  });
+
+  // Hors de Open pour capturer aussi les closes prématurés (ex: 4000 = unauthorized)
+  connection.on(LiveTranscriptionEvents.Close, evt => {
+    const code = evt?.code ?? evt;
+    if (code && code !== 1000) {
+      logger.warn('Deepgram connexion fermée anormalement', { code, reason: evt?.reason });
+    } else {
+      logger.info('Deepgram connexion fermée', { code });
+    }
   });
 
   connection.on(LiveTranscriptionEvents.Open, () => {
@@ -39,10 +51,6 @@ function createDeepgramSession(onTranscript, onError) {
       } catch (err) {
         logger.error('Erreur traitement transcript', { error: err.message });
       }
-    });
-
-    connection.on(LiveTranscriptionEvents.Close, () => {
-      logger.info('Deepgram connexion fermée');
     });
   });
 
