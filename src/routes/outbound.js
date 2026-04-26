@@ -222,8 +222,16 @@ function setupOutboundStream(server) {
             conversationHistory.push({ role: 'assistant', content: speakText });
             if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
           },
-          // Met à jour l'étape courante après chaque réponse LLM
-          onStep: (step) => { currentStep = step; },
+          // Met à jour l'étape et injecte un verrou système dans l'historique pour éviter le rebouclage
+          onStep: (step) => {
+            const prevStep = currentStep;
+            currentStep = step;
+            if (prevStep === 1 && step >= 2) {
+              conversationHistory.push({ role: 'system', content: 'الاهتمام تأكد. انتقل مباشرة للخطوة 2.' });
+            } else if (prevStep === 2 && step >= 3) {
+              conversationHistory.push({ role: 'system', content: 'العنوان تأكد. انتقل مباشرة للخطوة 3.' });
+            }
+          },
           // Met à jour le statut de commande en DB si le LLM le demande
           onStatusUpdate: async (status) => {
             const statusMap = {
