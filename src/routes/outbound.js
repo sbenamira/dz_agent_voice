@@ -194,11 +194,6 @@ router.get('/stats/:campaignId', async (req, res) => {
 const STEP_PROMPTS = {
   1: (o) => `قول للعميل سلام وعرف روحك من TCF Academy واسأله: "مازال مهتم بـ ${o.productName} بـ ${o.price} دينار؟"`,
   2: (o) => `اسأل فقط: "العنوان تاعك: ${o.address} — صحيح؟" — لا تأكد، فقط اسأل`,
-  'delay': (o) => {
-    const map = { '1': 'يوم واحد', '2': 'يومين', '3': 'ثلاثة أيام', '4': 'أربعة أيام', '5': 'خمسة أيام' };
-    const delaiText = map[String(o.deliveryDelay)] || `${o.deliveryDelay} أيام`;
-    return `قول للعميل: "التوصيل يكون خلال ${delaiText} إن شاء الله."`;
-  },
   3: ()  => `اسأل فقط: "واش عندك أي سؤال آخر؟" — لا تأكد، فقط اسأل`,
   4: ()  => `قول: "شكراً على ثقتك، نتمنالك يوم سعيد. مع السلامة." وأعد JSON مع "hangup":true,"status":"confirmé"`,
   cancel: () => `قول: "صحا، نلغيو الطلبية. شكراً على وقتك." وأعد JSON مع "hangup":true,"status":"annulé"`
@@ -267,25 +262,7 @@ function setupOutboundStream(server) {
         const positive = isPositive(transcript);
         const negative = isNegative(transcript);
 
-        // Avancer l'état selon la réponse du client AVANT d'appeler le LLM
-        if (state.step === 1) {
-          if (positive) { state.step = 2; state.confirmed.interest = true; }
-          else if (negative) { state.step = 'cancel'; }
-        } else if (state.step === 2) {
-          if (positive) { state.step = 'delay'; state.confirmed.address = true; }
-          // Si négatif ou correction adresse → rester step 2, LLM gère
-        } else if (state.step === 3) {
-          if (negative) state.step = 4;
-          // Si question → rester step 3, LLM répond librement
-        }
-
-        const promptFn = STEP_PROMPTS[state.step];
-        if (!promptFn) return; // étape invalide ou déjà terminée
-
-        const stepPrompt = promptFn(order);
-        logger.info('Outbound step', { callId, step: state.step, transcript: transcript.slice(0, 40) });
-
-        // Callbacks extraits pour réutilisation dans l'enchaînement delay→3
+        // Callbacks réutilisables
         const doTTS = async (speakText) => {
           if (!speakText) return;
           isTTSPlaying = true; ttsStartTime = Date.now();
@@ -310,13 +287,16 @@ function setupOutboundStream(server) {
           logger.info('Raccrochage automatique', { callId });
         };
 
-        await agent.streamOutboundResponse({
-          callId, stepPrompt, userMessage: transcript, history: conversationHistory,
-          onChunk: doTTS, onStatusUpdate: doStatusUpdate, onHangup: doHangup
-        });
+        // Step 2 confirmé → annonce délai (phrase fixe, sans LLM) puis step 3
+        if (state.step === 2 && positive) {
+          state.confirmed.address = true;
+          logger.info('Outbound step', { callId, step: 'delay', transcript: transcript.slice(0, 40) });
 
-        // Après le délai de livraison, enchaîner step 3 sans attendre un nouveau transcript client
-        if (state.step === 'delay') {
+          const delaiMap = { '1': 'يوم واحد', '2': 'يومين', '3': 'ثلاثة أيام', '4': 'أربعة أيام', '5': 'خمسة أيام' };
+          const delaiText = delaiMap[String(order?.deliveryDelay)] || `${order?.deliveryDelay} أيام`;
+          await doTTS(`التوصيل يكون خلال ${delaiText} إن شاء الله.`);
+          await new Promise(r => setTimeout(r, 500));
+
           state.step = 3;
           logger.info('Outbound step', { callId, step: 3, auto: true });
           await agent.streamOutboundResponse({
@@ -324,7 +304,28 @@ function setupOutboundStream(server) {
             history: conversationHistory,
             onChunk: doTTS, onStatusUpdate: doStatusUpdate, onHangup: doHangup
           });
+          return;
         }
+
+        // Transitions normales pour les autres étapes
+        if (state.step === 1) {
+          if (positive) { state.step = 2; state.confirmed.interest = true; }
+          else if (negative) { state.step = 'cancel'; }
+        } else if (state.step === 3) {
+          if (negative) state.step = 4;
+          // Si question → rester step 3, LLM répond librement
+        }
+
+        const promptFn = STEP_PROMPTS[state.step];
+        if (!promptFn) return; // étape invalide ou déjà terminée
+
+        const stepPrompt = promptFn(order);
+        logger.info('Outbound step', { callId, step: state.step, transcript: transcript.slice(0, 40) });
+
+        await agent.streamOutboundResponse({
+          callId, stepPrompt, userMessage: transcript, history: conversationHistory,
+          onChunk: doTTS, onStatusUpdate: doStatusUpdate, onHangup: doHangup
+        });
       } catch (err) {
         logger.error('handleTranscript outbound', { error: err.message, callId });
       } finally {
