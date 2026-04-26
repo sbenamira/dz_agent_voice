@@ -33,6 +33,8 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], la
     if (effectiveSubjectId) {
       ragContext = await rag.searchContext(effectiveSubjectId, userMessage);
     }
+    const ragChunks = ragContext ? ragContext.split('\n\n---\n\n').length : 0;
+    logger.info('[RAG]', { subjectId: effectiveSubjectId, chunks: ragChunks });
 
     const REMINDER = '\n\nIMPORTANT: Réponds UNIQUEMENT avec le JSON demandé, sans texte avant ou après. Exemple: {"speak":"واش تحب؟","display":"واش تحب؟"}';
     const systemPrompt = (langueDetectee === 'ar' ? promptDarija : promptFr) + REMINDER +
