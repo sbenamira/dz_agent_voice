@@ -12,12 +12,14 @@ function getTwilioClient() {
 }
 
 // Lance un appel sortant vers un numéro
-async function initiateCall(to, webhookUrl) {
+// extra : paramètres optionnels supplémentaires (ex: statusCallback, statusCallbackEvent)
+async function initiateCall(to, webhookUrl, extra = {}) {
   try {
     const call = await getTwilioClient().calls.create({
       to,
       from: config.twilio.phoneNumber,
-      url: webhookUrl
+      url: webhookUrl,
+      ...extra
     });
     logger.info('Appel initié', { to, callSid: call.sid });
     return call;

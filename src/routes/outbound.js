@@ -93,10 +93,15 @@ router.post('/call', async (req, res) => {
       return res.status(400).json({ error: 'Numéro invalide — format E.164 requis, ex: +21361234567' });
     }
 
-    const baseUrl = config.server.baseUrl || `https://${req.headers.host}`;
+    const baseUrl = config.server.baseUrl || process.env.BASE_URL || `https://${req.headers.host}`;
     const webhookUrl = `${baseUrl}/outbound/webhook`;
+    const statusCallbackUrl = `${baseUrl}/outbound/webhook/status`;
 
-    const call = await initiateCall(telephone, webhookUrl);
+    const call = await initiateCall(telephone, webhookUrl, {
+      statusCallback: statusCallbackUrl,
+      statusCallbackMethod: 'POST',
+      statusCallbackEvent: ['no-answer', 'busy', 'failed', 'completed']
+    });
 
     // Créer l'enregistrement DB maintenant pour avoir le callId dès la réponse
     const callRecord = await db.createCall({ campaign_id: null, contact_id: null, direction: 'outbound' });
@@ -116,6 +121,32 @@ router.post('/call', async (req, res) => {
     logger.error('POST /outbound/call', { error: err.message });
     res.status(500).json({ error: err.message });
   }
+});
+
+// POST /outbound/webhook/status — StatusCallback Twilio : met à jour DB si pas de réponse
+router.post('/webhook/status', async (req, res) => {
+  try {
+    const { CallSid, CallStatus } = req.body;
+    const statusMap = {
+      'no-answer': 'aucune_réponse',
+      'busy':      'aucune_réponse',
+      'failed':    'aucune_réponse',
+      'completed': null  // géré par onStatusUpdate WebSocket, on ne surécrit pas
+    };
+    const status = statusMap[CallStatus];
+    if (status) {
+      // callId disponible dans pendingOrders si le WebSocket n'a jamais été ouvert
+      const order = pendingOrders.get(CallSid);
+      if (order?.callId) {
+        await db.updateCallStatus(order.callId, status);
+        pendingOrders.delete(CallSid);
+        logger.info('Statut no-answer enregistré', { CallSid, status, callId: order.callId });
+      }
+    }
+  } catch (err) {
+    logger.error('POST /outbound/webhook/status', { error: err.message });
+  }
+  res.sendStatus(200); // Twilio attend toujours un 200
 });
 
 // POST /outbound/webhook — Webhook Twilio pour appels outbound sortants, retourne TwiML WebSocket
