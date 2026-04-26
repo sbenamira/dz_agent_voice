@@ -206,9 +206,10 @@ function setupOutboundStream(server) {
     let isTTSPlaying = false;
     let ttsStartTime = 0;
 
-    // État de la machine : step 1→2→3→4 ou cancel
+    // État de la machine — scopé par connexion, une instance par appel
     const state = {
       step: 1,
+      greetingDone: false,
       confirmed: { interest: false, address: false }
     };
 
