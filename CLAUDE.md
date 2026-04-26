@@ -44,13 +44,35 @@ is_final transcript → enqueueOrProcess() → handleTranscript()
 
 Fichier central : `src/routes/inbound.js` — gère tout le cycle de vie d'un appel via `setupMediaStream(server)`.
 
+### Pipeline d'un appel outbound (confirmation commande)
+
+```
+POST /outbound/call → initiateCall() Twilio → webhook POST /outbound/webhook → TwiML WebSocket → /outbound-stream
+WebSocket start event → pendingOrders.get(callSid) → buildGreeting() → synthesizeStream() (TTS direct, pas de LLM)
+Client répond → Deepgram STT → handleTranscript()
+  → transitions état (code, pas LLM) → agent.streamOutboundResponse() → Groq LLM
+  → doTTS() → synthesizeStream() → Twilio WebSocket
+Raccrochage : JSON {hangup:true} → onHangup() → 4s delay → ws.close()
+```
+
+Fichier central : `src/routes/outbound.js` — exporte `{ router, setupOutboundStream }`.
+
 ### Points d'architecture critiques
 
-**`enqueueOrProcess` + `transcriptQueue`** (`inbound.js`) : les transcripts finaux STT ne sont jamais perdus. Si `isProcessing=true`, le transcript est mis en file dans `transcriptQueue`. Le bloc `finally` de `handleTranscript` dépile et traite le suivant. Log `[STT FINAL]` sur chaque transcript avec `sendingToLLM: 'oui'|'file'`.
+**`enqueueOrProcess` + `transcriptQueue`** (`inbound.js`) : les transcripts finaux STT ne sont jamais perdus. Si `isProcessing=true`, le transcript est mis en file dans `transcriptQueue`. Le bloc `finally` de `handleTranscript` dépile et traite le suivant.
 
-**`isTTSPlaying` + `ttsStartTime`** (`inbound.js`) : `isTTSPlaying` mis à `true` uniquement pendant `synthesizeStream()` — pas pendant le filler, pas pendant l'appel LLM. `ttsStartTime = Date.now()` enregistré à chaque début de TTS. Sert à : (1) bloquer l'envoi audio à Deepgram pendant que Karim parle (anti-écho), (2) enforcer le délai minimum de 1s avant barge-in.
+**`isTTSPlaying` + `ttsStartTime`** (`inbound.js` et `outbound.js`) : `isTTSPlaying` mis à `true` uniquement pendant `synthesizeStream()` — pas pendant le filler, pas pendant l'appel LLM. Sert à : (1) bloquer l'envoi audio à Deepgram pendant que Karim parle (anti-écho), (2) enforcer le délai minimum de 1s avant barge-in.
 
-**Barge-in** (`inbound.js`) : déclenché uniquement quand `speechFinal === true` sur le callback `onTranscript` (pas sur les interims). Condition : `speechFinal && isTTSPlaying && !isBargingIn && (Date.now() - ttsStartTime) > 1000`. Le version counter `activeTurnId` empêche le `finally` d'un tour interrompu de remettre `isProcessing=false` après qu'un nouveau tour a démarré.
+**Barge-in** (`inbound.js`) : déclenché uniquement quand `speechFinal === true` sur le callback `onTranscript`. Condition : `speechFinal && isTTSPlaying && !isBargingIn && (Date.now() - ttsStartTime) > 1000`. Le version counter `activeTurnId` empêche le `finally` d'un tour interrompu de remettre `isProcessing=false` après qu'un nouveau tour a démarré.
+
+**Machine à états outbound** (`outbound.js`) : le code (pas le LLM) gère les transitions d'étape. `STEP_PROMPTS` injecte une instruction précise par étape dans `streamOutboundResponse`. `isPositive`/`isNegative` sur le transcript détermine la transition avant d'appeler le LLM.
+
+- Étape 2 → confirmée : **bypass LLM total** — phrase de délai construite en code (`التوصيل يكون خلال يومين إن شاء الله.`) jouée directement via `synthesizeStream`, puis step 3 enchaîné sans transcript client. Ne jamais repasser ce chemin par le LLM — il ignore ou réorganise le texte.
+- JSON `{hangup:true, status:"confirmé"|"annulé"}` déclenche `onStatusUpdate` puis `onHangup` dans `streamOutboundResponse`.
+
+**`pendingOrders`** (`outbound.js`) : Map module-level `CallSid → {callId, productName, price, address, deliveryDelay}` entre `POST /outbound/call` et l'ouverture du WebSocket `/outbound-stream`. Nettoyé via `.delete()` au `start` event. Utilisé aussi par `/outbound/webhook/status` pour le no-answer.
+
+**`pendingCallers`** (`inbound.js`) : Map `CallSid → numéro appelant` entre le POST webhook Twilio et l'ouverture du WebSocket `/media-stream`.
 
 **TTS ElevenLabs** (`services/tts.js`) :
 - `nettoyerTexte(text)` supprime les fillers vocaux (واه/آه/مم etc.) avant tout envoi à ElevenLabs
@@ -58,15 +80,13 @@ Fichier central : `src/routes/inbound.js` — gère tout le cycle de vie d'un ap
 - Si `Content-Type: audio/mpeg` → `pipeMP3ToMulaw()` via ffmpeg ; sinon passthrough direct
 - Cache mulaw en mémoire (50 entrées max). Les `console.log` sont intentionnels pour diagnostic Render
 
-**Format JSON agent** (`services/agent.js`) : le LLM génère `{"speak":"...","display":"..."}`. `streamResponse` accumule le stream complet sans stop tokens (évite de tronquer le JSON), parse, extrait `speak`, appelle `onChunk(speakText)` une seule fois.
+**Format JSON agent** (`services/agent.js`) : le LLM génère `{"speak":"...","display":"..."}`. `streamResponse` (inbound) et `streamOutboundResponse` (outbound) accumulent le stream complet sans stop tokens (évite de tronquer le JSON), parsent, extraient `speak`. `streamOutboundResponse` attend `onChunk` (TTS) avant de déclencher `onHangup`/`onStatusUpdate`.
 
-**RAG** (`services/agent.js`) : actuellement **désactivé** — `rag.searchContext()` commenté, `ragContext=''`. Les infos produit (TCF Canada, prix, livraison) sont directement dans `src/prompts/karim_darija.txt`. Pour réactiver : décommenter les 2 lignes dans `streamResponse()` et définir `DEFAULT_SUBJECT_ID`. Seed via `scripts/seed-knowledge.js`.
+**RAG** (`services/agent.js`) : actuellement **désactivé** — `rag.searchContext()` commenté, `ragContext=''`. Les infos produit sont directement dans les prompts. Pour réactiver : décommenter les 2 lignes dans `streamResponse()` et définir `DEFAULT_SUBJECT_ID`.
 
-**Deepgram session** (`services/stt.js`) : `createDeepgramSession(onTranscript, onError)` — 2 paramètres. `onTranscript(transcript, speechFinal)` passe le flag `speech_final` en 2e argument, utilisé par `inbound.js` pour le barge-in. KeepAlive toutes les 5s. Max 3 reconnexions sur 1006.
+**Deepgram session** (`services/stt.js`) : `createDeepgramSession(onTranscript, onError)` — 2 paramètres. `onTranscript(transcript, speechFinal)` passe le flag `speech_final` en 2e argument. KeepAlive toutes les 5s. Max 3 reconnexions sur 1006.
 
-**Fillers** (`src/fillers.js`) : `initFillers()` appelé en module-scope dans `inbound.js` (fire-and-forget). `getRandomFiller()` retourne `null` si pas encore prêt — `handleTranscript` vérifie avant d'appeler `sendAudio`.
-
-**pendingCallers** (`inbound.js`) : Map `CallSid → numéro appelant` entre le POST webhook Twilio et l'ouverture du WebSocket `/media-stream`.
+**Fillers** (`src/fillers.js`) : `initFillers()` appelé en module-scope dans `inbound.js` (fire-and-forget). `getRandomFiller()` retourne `null` si pas encore prêt.
 
 ### Services
 
@@ -74,29 +94,46 @@ Fichier central : `src/routes/inbound.js` — gère tout le cycle de vie d'un ap
 |---|---|
 | `services/stt.js` | Session Deepgram WebSocket streaming, retourne `{send, close}` |
 | `services/tts.js` | `synthesizeStream(text, onChunk)` — filtre fillers + ElevenLabs + fallback ffmpeg + cache mulaw |
-| `services/agent.js` | `streamResponse({userMessage, history, onChunk})` Groq + parse JSON speak |
-| `services/database.js` | CRUD Supabase : calls, transcripts, call_turns, monitoring |
-| `services/rag.js` | Chunking + embeddings OpenAI + recherche pgvector (désactivé en prod actuellement) |
+| `services/agent.js` | `streamResponse()` inbound ; `streamOutboundResponse()` outbound (+ hangup/status callbacks) |
+| `services/database.js` | CRUD Supabase. `updateCallStatus(callId, status)` écrit le champ `resultat` de la table `calls` |
+| `services/rag.js` | Chunking + embeddings OpenAI + recherche pgvector (désactivé en prod) |
 | `services/campaign.js` | Campagnes outbound séquentielles |
-| `services/telephony.js` | Client Twilio singleton + `generateTwiMLStream()` |
+| `services/telephony.js` | Client Twilio singleton + `generateTwiMLStream()` + `initiateCall(to, url, extra)` |
 
 ### Routes
 
 | Route | Description |
 |---|---|
-| `POST /inbound` | Webhook Twilio → TwiML |
-| `WS /media-stream` | Pipeline audio temps réel |
-| `POST /outbound/start` | Lance campagne outbound |
-| `POST /outbound/call` | Appel ad-hoc |
+| `POST /inbound` | Webhook Twilio → TwiML inbound |
+| `WS /media-stream` | Pipeline audio inbound temps réel |
+| `POST /outbound/call` | Appel ad-hoc : crée enregistrement DB + lance Twilio |
+| `POST /outbound/webhook` | Webhook Twilio → TwiML outbound |
+| `WS /outbound-stream` | Pipeline audio outbound (machine à états) |
+| `POST /outbound/webhook/status` | StatusCallback Twilio : no-answer/busy/failed → `aucune_réponse` en DB |
+| `GET /outbound/status/:callSid` | Statut Twilio en temps réel |
+| `POST /outbound/start` | Lance campagne outbound existante |
 | `GET /dashboard` | Dashboard monitoring (Basic Auth optionnel) |
 | `GET /test-call` | Test navigateur Twilio Client JS SDK v2 |
 | `GET /test-outbound` | Test UI appel sortant |
 | `GET /health` | Health check Render |
+| `GET /api/calls/:id` | Détail appel avec champ `resultat` |
+| `PATCH /api/calls/:id/status` | Met à jour `resultat` manuellement |
+| `GET /api/calls/:id/transcripts` | Transcripts d'un appel |
 | `/api/*` | CRUD workspaces, subjects, campaigns, contacts |
 
-### Base de données (monitoring)
+### Prompts
 
-La table `call_turns` stocke chaque tour avec `llm_duration_ms`, `tts_duration_ms`, `total_latency_ms`. Le dashboard lit via `GET /api/calls` et `GET /api/calls/:id`.
+| Fichier | Utilisé par | Notes |
+|---|---|---|
+| `src/prompts/karim_darija.txt` | `streamResponse()` inbound | Contient infos produit TCF Canada (RAG désactivé) |
+| `src/prompts/karim_fr.txt` | `streamResponse()` si langue française | |
+| `src/prompts/karim_outbound.txt` | `streamOutboundResponse()` base fixe | Instructions d'étape injectées dynamiquement depuis `STEP_PROMPTS` dans outbound.js |
+
+Darija algérienne : تاع (pas ديال), درك (pas دابا), بزاف (pas برشا), مليح/لاباس (pas مزيان), صحيح (pas مزبوط).
+
+### Base de données
+
+La table `call_turns` stocke chaque tour avec `llm_duration_ms`, `tts_duration_ms`, `total_latency_ms`. La table `calls` a un champ `resultat` mis à jour via `updateCallStatus` (valeurs : `adresse_confirmée`, `annulé_client`, `aucune_réponse`).
 
 ## VARIABLES D'ENVIRONNEMENT REQUISES
 
@@ -115,6 +152,7 @@ Optionnelles :
 TTS_SPEED=0.7           # speaking_rate ElevenLabs (1.0=normal, 0.7=ralenti) — défaut 0.7
 DEFAULT_SUBJECT_ID=     # subject_id RAG pour appels inbound (requis si RAG réactivé)
 DASHBOARD_PASSWORD      # Basic Auth sur /dashboard (sans = accès libre)
+BASE_URL                # URL publique Render (ex: https://dz-agent-voice.onrender.com)
 TWILIO_API_KEY / TWILIO_API_SECRET / TWILIO_TWIML_APP_SID  # test-call navigateur
 ```
 
@@ -126,5 +164,5 @@ TWILIO_API_KEY / TWILIO_API_SECRET / TWILIO_TWIML_APP_SID  # test-call navigateu
 - Tests dans `tests/` — mocker `@supabase/supabase-js`, `dotenv`, `child_process` (spawn/exec pour ffmpeg), et les services externes
 - Tous les fichiers de test doivent définir `ELEVENLABS_API_KEY` et `ELEVENLABS_VOICE_ID` dans `process.env` (requis par `config.js validate()`)
 - `ffmpeg` doit être disponible sur le serveur (présent sur Render, vérifié au démarrage via `[STARTUP] ffmpeg OK`)
-- Prompts Karim dans `src/prompts/karim_darija.txt` — format JSON `{"speak":"...","display":"..."}`, 1-2 phrases, darija algérienne (تاع pas ديال, درك pas دابا, بزاف pas برشا, مليح/لاباس pas مزيان). Infos produit TCF Canada incluses directement dans le prompt (RAG désactivé)
 - `onTranscript` dans `stt.js` a la signature `(transcript, speechFinal)` — ne pas modifier sans mettre à jour `inbound.js` et `tests/stt.test.js`
+- `outbound.js` exporte `{ router, setupOutboundStream }` — ne pas changer en export unique
