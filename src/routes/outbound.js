@@ -181,7 +181,7 @@ function isNegative(text) {
 // Message d'accueil — demande uniquement l'intérêt (étape 1)
 function buildGreeting(order) {
   if (!order || !order.productName) return 'سلام، أنا كريم من TCF Academy.';
-  return `سلام، أنا كريم من TCF Academy. راني نعيطلك على الطلبية تاعك. مازال مهتم بـ ${order.productName} بـ ${order.price}؟`;
+  return `سلام، أنا كريم من TCF Academy. راني نعيطلك على الطلبية تاعك. مازال مهتم بـ ${order.productName} بـ ${order.price} دينار؟`;
 }
 
 // Attache le handler WebSocket /outbound-stream au serveur HTTP
