@@ -194,6 +194,11 @@ router.get('/stats/:campaignId', async (req, res) => {
 const STEP_PROMPTS = {
   1: (o) => `قول للعميل سلام وعرف روحك من TCF Academy واسأله: "مازال مهتم بـ ${o.productName} بـ ${o.price} دينار؟"`,
   2: (o) => `اسأل فقط: "العنوان تاعك: ${o.address} — صحيح؟" — لا تأكد، فقط اسأل`,
+  'delay': (o) => {
+    const map = { '1': 'يوم واحد', '2': 'يومين', '3': 'ثلاثة أيام', '4': 'أربعة أيام', '5': 'خمسة أيام' };
+    const delaiText = map[String(o.deliveryDelay)] || `${o.deliveryDelay} أيام`;
+    return `قول للعميل: "التوصيل يكون خلال ${delaiText} إن شاء الله."`;
+  },
   3: ()  => `اسأل فقط: "واش عندك أي سؤال آخر؟" — لا تأكد، فقط اسأل`,
   4: ()  => `قول: "شكراً على ثقتك، نتمنالك يوم سعيد. مع السلامة." وأعد JSON مع "hangup":true,"status":"confirmé"`,
   cancel: () => `قول: "صحا، نلغيو الطلبية. شكراً على وقتك." وأعد JSON مع "hangup":true,"status":"annulé"`
@@ -267,7 +272,7 @@ function setupOutboundStream(server) {
           if (positive) { state.step = 2; state.confirmed.interest = true; }
           else if (negative) { state.step = 'cancel'; }
         } else if (state.step === 2) {
-          if (positive) { state.step = 3; state.confirmed.address = true; }
+          if (positive) { state.step = 'delay'; state.confirmed.address = true; }
           // Si négatif ou correction adresse → rester step 2, LLM gère
         } else if (state.step === 3) {
           if (negative) state.step = 4;
@@ -280,37 +285,46 @@ function setupOutboundStream(server) {
         const stepPrompt = promptFn(order);
         logger.info('Outbound step', { callId, step: state.step, transcript: transcript.slice(0, 40) });
 
-        await agent.streamOutboundResponse({
-          callId,
-          stepPrompt,
-          userMessage: transcript,
-          history: conversationHistory,
-          onChunk: async (speakText) => {
-            if (!speakText) return;
-            isTTSPlaying = true; ttsStartTime = Date.now();
-            await synthesizeStream(speakText, mulawChunk => {
-              if (mulawChunk.length) sendAudio(mulawChunk);
-            }).catch(err => logger.error('TTS outbound chunk', { error: err.message }))
-              .finally(() => { isTTSPlaying = false; });
-            conversationHistory.push({ role: 'user', content: transcript });
-            conversationHistory.push({ role: 'assistant', content: speakText });
-            if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
-          },
-          // Met à jour le statut de commande en DB
-          onStatusUpdate: async (status) => {
-            const statusMap = { 'confirmé': 'adresse_confirmée', 'annulé': 'annulé_client' };
-            if (callId) await db.updateCallStatus(callId, statusMap[status] || status);
-          },
-          // Délai fixe de 4s pour laisser le dernier TTS se terminer, puis raccroche
-          onHangup: async () => {
-            await new Promise(r => setTimeout(r, 4000));
-            if (ws.readyState === WebSocket.OPEN && streamSid) {
-              ws.send(JSON.stringify({ event: 'hangup', streamSid }));
-            }
-            if (ws.readyState !== WebSocket.CLOSED) ws.close();
-            logger.info('Raccrochage automatique', { callId });
+        // Callbacks extraits pour réutilisation dans l'enchaînement delay→3
+        const doTTS = async (speakText) => {
+          if (!speakText) return;
+          isTTSPlaying = true; ttsStartTime = Date.now();
+          await synthesizeStream(speakText, mulawChunk => {
+            if (mulawChunk.length) sendAudio(mulawChunk);
+          }).catch(err => logger.error('TTS outbound chunk', { error: err.message }))
+            .finally(() => { isTTSPlaying = false; });
+          conversationHistory.push({ role: 'user', content: transcript });
+          conversationHistory.push({ role: 'assistant', content: speakText });
+          if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
+        };
+        const doStatusUpdate = async (status) => {
+          const statusMap = { 'confirmé': 'adresse_confirmée', 'annulé': 'annulé_client' };
+          if (callId) await db.updateCallStatus(callId, statusMap[status] || status);
+        };
+        const doHangup = async () => {
+          await new Promise(r => setTimeout(r, 4000));
+          if (ws.readyState === WebSocket.OPEN && streamSid) {
+            ws.send(JSON.stringify({ event: 'hangup', streamSid }));
           }
+          if (ws.readyState !== WebSocket.CLOSED) ws.close();
+          logger.info('Raccrochage automatique', { callId });
+        };
+
+        await agent.streamOutboundResponse({
+          callId, stepPrompt, userMessage: transcript, history: conversationHistory,
+          onChunk: doTTS, onStatusUpdate: doStatusUpdate, onHangup: doHangup
         });
+
+        // Après le délai de livraison, enchaîner step 3 sans attendre un nouveau transcript client
+        if (state.step === 'delay') {
+          state.step = 3;
+          logger.info('Outbound step', { callId, step: 3, auto: true });
+          await agent.streamOutboundResponse({
+            callId, stepPrompt: STEP_PROMPTS[3](), userMessage: transcript,
+            history: conversationHistory,
+            onChunk: doTTS, onStatusUpdate: doStatusUpdate, onHangup: doHangup
+          });
+        }
       } catch (err) {
         logger.error('handleTranscript outbound', { error: err.message, callId });
       } finally {
