@@ -71,13 +71,13 @@ async function synthesizeStream(text, onChunk) {
         text,
         model_id: 'eleven_turbo_v2_5',
         voice_settings: {
-          stability: 0.45,
+          stability: 0.55,
           similarity_boost: 0.85,
-          style: 0.35,
-          use_speaker_boost: true
+          style: 0.20,
+          use_speaker_boost: true,
+          speaking_rate: parseFloat(process.env.TTS_SPEED || '0.7')
         },
-        output_format: 'ulaw_8000',
-        speed: parseFloat(process.env.TTS_SPEED || '0.85')
+        output_format: 'ulaw_8000'
       })
     }
   );
