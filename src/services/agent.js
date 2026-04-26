@@ -29,13 +29,14 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], la
     await db.insertTranscript({ call_id: callId, role: 'client', message: userMessage, langue: langueDetectee });
 
     let ragContext = '';
-    if (subjectId) {
-      ragContext = await rag.searchContext(subjectId, userMessage);
+    const effectiveSubjectId = subjectId || process.env.DEFAULT_SUBJECT_ID || null;
+    if (effectiveSubjectId) {
+      ragContext = await rag.searchContext(effectiveSubjectId, userMessage);
     }
 
     const REMINDER = '\n\nIMPORTANT: Réponds UNIQUEMENT avec le JSON demandé, sans texte avant ou après. Exemple: {"speak":"واش تحب؟","display":"واش تحب؟"}';
     const systemPrompt = (langueDetectee === 'ar' ? promptDarija : promptFr) + REMINDER +
-      (ragContext ? `\n\n## CONTEXTE DISPONIBLE\n${ragContext}` : '');
+      (ragContext ? `\n\nInformations disponibles :\n${ragContext}` : '');
 
     const messages = [
       { role: 'system', content: systemPrompt },

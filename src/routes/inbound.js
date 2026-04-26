@@ -99,7 +99,7 @@ function setupMediaStream(server) {
         const llmStart = Date.now();
         await agent.streamResponse({
           callId,
-          subjectId: null,
+          subjectId: process.env.DEFAULT_SUBJECT_ID || null,
           userMessage: transcript,
           history: conversationHistory,
           langue: callLanguage,

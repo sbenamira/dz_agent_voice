@@ -76,7 +76,8 @@ async function synthesizeStream(text, onChunk) {
           style: 0.35,
           use_speaker_boost: true
         },
-        output_format: 'ulaw_8000'
+        output_format: 'ulaw_8000',
+        speed: parseFloat(process.env.TTS_SPEED || '0.85')
       })
     }
   );
