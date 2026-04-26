@@ -195,6 +195,7 @@ const HTML_OUTBOUND = `<!DOCTYPE html>
 
     <div id="order-panel">
       <h2>Statut de la commande</h2>
+      <p id="auto-status" style="display:none;font-size:0.82rem;margin-bottom:10px;font-weight:600;"></p>
       <div class="status-grid">
         <button data-s="confirmed">✅ Adresse confirmée</button>
         <button data-s="waiting_delivery">🕐 En attente livraison</button>
@@ -245,7 +246,25 @@ const HTML_OUTBOUND = `<!DOCTYPE html>
     function onCallEnded() {
       document.getElementById('btn').disabled = false;
       document.getElementById('order-panel').style.display = 'block';
-      if (currentCallId) loadTranscripts(currentCallId);
+      if (currentCallId) {
+        loadTranscripts(currentCallId);
+        loadAutoStatus(currentCallId);
+      }
+    }
+
+    function loadAutoStatus(callId) {
+      var COLORS = { 'adresse_confirmée':'#00cc66', 'annulé_client':'#cc2200', 'à_rappeler':'#ff6600' };
+      var LABELS = { 'adresse_confirmée':'✅ Adresse confirmée', 'annulé_client':'❌ Annulé par le client', 'à_rappeler':'📞 À rappeler' };
+      fetch('/api/calls/' + callId)
+        .then(function(r) { return r.json(); })
+        .then(function(call) {
+          var el = document.getElementById('auto-status');
+          if (!el || !call.resultat) return;
+          el.style.color = COLORS[call.resultat] || '#888';
+          el.textContent = 'Auto-détecté : ' + (LABELS[call.resultat] || call.resultat);
+          el.style.display = 'block';
+        })
+        .catch(function() {});
     }
 
     function pollStatus(callSid) {

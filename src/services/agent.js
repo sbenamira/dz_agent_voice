@@ -80,11 +80,13 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], la
 }
 
 // Appels outbound — confirmation de commande avec contexte produit injecté dans le prompt
-async function streamOutboundResponse({ callId, productName, price, address, deliveryDelay, userMessage, history = [], onChunk }) {
+// onHangup() : appelé après TTS si le LLM décide de raccrocher (json.hangup === true)
+// onStatusUpdate(status) : appelé si le LLM émet un statut de commande (json.status)
+async function streamOutboundResponse({ callId, productName, price, address, deliveryDelay, userMessage, history = [], onChunk, onHangup, onStatusUpdate }) {
   try {
     await db.insertTranscript({ call_id: callId, role: 'client', message: userMessage, langue: 'ar' });
 
-    const REMINDER = '\n\nIMPORTANT: Réponds UNIQUEMENT avec le JSON demandé, sans texte avant ou après. Exemple: {"speak":"واكاش سيدي","display":"واكاش سيدي"}';
+    const REMINDER = '\n\nIMPORTANT: Réponds UNIQUEMENT avec le JSON. Raccrochage: {"speak":"...","display":"...","hangup":true,"status":"confirmé" ou "annulé"}. Sinon: {"speak":"...","display":"..."}';
     const systemPrompt = promptOutbound
       .replace(/{productName}/g, productName || '')
       .replace(/{price}/g, price || '')
@@ -101,7 +103,7 @@ async function streamOutboundResponse({ callId, productName, price, address, del
     const stream = await groq.chat.completions.create({
       model: config.groq.model,
       messages,
-      max_tokens: 120,
+      max_tokens: 150,
       temperature: 0.3,
       stream: true
     });
@@ -113,15 +115,21 @@ async function streamOutboundResponse({ callId, productName, price, address, del
     }
 
     let speakText = fullResponse.trim();
+    let parsedJson = null;
     try {
-      const parsed = JSON.parse(fullResponse.trim());
-      if (parsed && parsed.speak) speakText = parsed.speak.trim();
+      parsedJson = JSON.parse(fullResponse.trim());
+      if (parsedJson && parsedJson.speak) speakText = parsedJson.speak.trim();
     } catch (_) {}
 
-    if (onChunk) onChunk(speakText);
+    // Attendre la fin du TTS avant de déclencher raccrochage ou mise à jour statut
+    if (onChunk) await onChunk(speakText);
 
     await db.insertTranscript({ call_id: callId, role: 'agent', message: speakText, langue: 'ar' });
-    logger.info('Réponse outbound générée', { callId, chars: speakText.length });
+    logger.info('Réponse outbound générée', { callId, chars: speakText.length, hangup: parsedJson?.hangup || false });
+
+    if (parsedJson?.status && onStatusUpdate) await onStatusUpdate(parsedJson.status);
+    if (parsedJson?.hangup === true && onHangup) await onHangup();
+
     return speakText;
   } catch (err) {
     logger.error('streamOutboundResponse', { error: err.message, callId });

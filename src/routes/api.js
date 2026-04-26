@@ -142,6 +142,16 @@ router.get('/stats', async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/calls/:id — détail d'un appel (utilisé pour afficher le statut auto-détecté)
+router.get('/calls/:id', async (req, res) => {
+  try {
+    const data = await db.getCallDetail(req.params.id);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PATCH /api/calls/:id/status — met à jour le résultat d'un appel outbound
 router.patch('/calls/:id/status', async (req, res) => {
   try {

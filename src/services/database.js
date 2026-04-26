@@ -369,6 +369,19 @@ async function getMonitoringStats() {
   }
 }
 
+// Met à jour le statut métier d'un appel outbound (utilise l'id DB, pas le callSid Twilio)
+async function updateCallStatus(callId, status) {
+  try {
+    const { data, error } = await supabase
+      .from('calls').update({ resultat: status }).eq('id', callId).select().single();
+    if (error) throw error;
+    return data;
+  } catch (err) {
+    logger.error('updateCallStatus', { error: err.message });
+    throw err;
+  }
+}
+
 module.exports = {
   createWorkspace, getWorkspace, listWorkspaces,
   createSubject, getSubject, listSubjects, updateSubject,
@@ -378,5 +391,6 @@ module.exports = {
   createCall, updateCall, getCallStats,
   insertTranscript, getTranscripts,
   insertCallTurn, updateCallMonitoring, getCallsMonitoring, getCallDetail, getMonitoringStats,
+  updateCallStatus,
   supabase
 };

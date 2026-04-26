@@ -216,6 +216,23 @@ function setupOutboundStream(server) {
             conversationHistory.push({ role: 'user', content: transcript });
             conversationHistory.push({ role: 'assistant', content: speakText });
             if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
+          },
+          // Met à jour le statut de commande en DB si le LLM le demande
+          onStatusUpdate: async (status) => {
+            const statusMap = {
+              'confirmé': 'adresse_confirmée',
+              'annulé': 'annulé_client',
+              'question': 'à_rappeler'
+            };
+            if (callId) await db.updateCallStatus(callId, statusMap[status] || status);
+          },
+          // Raccroche automatiquement quand le script est terminé
+          onHangup: async () => {
+            if (ws.readyState === WebSocket.OPEN && streamSid) {
+              ws.send(JSON.stringify({ event: 'hangup', streamSid }));
+            }
+            ws.close();
+            logger.info('Raccrochage automatique', { callId });
           }
         });
       } catch (err) {
