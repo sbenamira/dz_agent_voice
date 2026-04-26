@@ -28,13 +28,11 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], la
 
     await db.insertTranscript({ call_id: callId, role: 'client', message: userMessage, langue: langueDetectee });
 
+    // RAG désactivé — infos produit directement dans karim_darija.txt
+    // const effectiveSubjectId = subjectId || process.env.DEFAULT_SUBJECT_ID || null;
+    // if (effectiveSubjectId) { ragContext = await rag.searchContext(effectiveSubjectId, userMessage); }
     let ragContext = '';
-    const effectiveSubjectId = subjectId || process.env.DEFAULT_SUBJECT_ID || null;
-    if (effectiveSubjectId) {
-      ragContext = await rag.searchContext(effectiveSubjectId, userMessage);
-    }
-    const ragChunks = ragContext ? ragContext.split('\n\n---\n\n').length : 0;
-    logger.info('[RAG]', { subjectId: effectiveSubjectId, chunks: ragChunks });
+    logger.info('[RAG]', { disabled: true });
 
     const REMINDER = '\n\nIMPORTANT: Réponds UNIQUEMENT avec le JSON demandé, sans texte avant ou après. Exemple: {"speak":"واش تحب؟","display":"واش تحب؟"}';
     const systemPrompt = (langueDetectee === 'ar' ? promptDarija : promptFr) + REMINDER +
