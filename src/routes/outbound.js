@@ -294,6 +294,7 @@ function setupOutboundStream(server) {
           const callSidTwilio = msg.start?.callSid || msg.start?.customParameters?.callSid || 'unknown';
 
           order = pendingOrders.get(callSidTwilio) || null;
+          pendingOrders.delete(callSidTwilio); // libérer l'entrée après récupération
           callId = order?.callId || null;
           callStartTime = Date.now();
 
