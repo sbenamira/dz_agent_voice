@@ -155,10 +155,32 @@ router.get('/stats/:campaignId', async (req, res) => {
   }
 });
 
-// Construit le message d'accueil à partir du contexte de commande
+// ── Machine à états ────────────────────────────────────────────────────────────
+
+// Prompts injectés dynamiquement selon l'étape courante
+// Le code gère l'état, le LLM reçoit une seule instruction précise par tour
+const STEP_PROMPTS = {
+  1: (o) => `قول للعميل سلام وعرف روحك من TCF Academy واسأله: "مازال مهتم بـ ${o.productName} بـ ${o.price} دينار؟"`,
+  2: (o) => `العميل أكد اهتمامه. اسأله فقط على العنوان: "العنوان تاعك: ${o.address} — صحيح؟"`,
+  3: ()  => `العنوان تأكد. اسأل فقط: "واش عندك أي سؤال آخر؟"`,
+  4: ()  => `قول: "شكراً على ثقتك، نتمنالك يوم مليح. مع السلامة." وأعد JSON مع "hangup":true,"status":"confirmé"`,
+  cancel: () => `قول: "واخا، نلغيو الطلبية. شكراً." وأعد JSON مع "hangup":true,"status":"annulé"`
+};
+
+// Détection d'une réponse positive (oui, accord)
+function isPositive(text) {
+  return /إيه|واه|واخا|نعم|صح|مليح|بلاش|أكيد/.test(text);
+}
+
+// Détection d'une réponse négative (non, refus)
+function isNegative(text) {
+  return /لا|ما نبيه|ما نبيش|ما نريد/.test(text);
+}
+
+// Message d'accueil — demande uniquement l'intérêt (étape 1)
 function buildGreeting(order) {
   if (!order || !order.productName) return 'سلام، أنا كريم من TCF Academy.';
-  return `سلام، أنا كريم من TCF Academy. راني نعيطلك على الطلبية تاعك. نأكدلك: ${order.productName} بـ ${order.price}. العنوان تاعك: ${order.address} — واش هذا مزبوط؟`;
+  return `سلام، أنا كريم من TCF Academy. راني نعيطلك على الطلبية تاعك. مازال مهتم بـ ${order.productName} بـ ${order.price}؟`;
 }
 
 // Attache le handler WebSocket /outbound-stream au serveur HTTP
@@ -183,8 +205,12 @@ function setupOutboundStream(server) {
     let order = null;
     let isTTSPlaying = false;
     let ttsStartTime = 0;
-    let currentStep = 1;    // étape courante du script (1=intérêt, 2=adresse, 3=final, 4=fin)
-    let lastTtsBytes = 0;   // bytes audio du dernier TTS — sert à calculer le délai avant raccrochage
+
+    // État de la machine : step 1→2→3→4 ou cancel
+    const state = {
+      step: 1,
+      confirmed: { interest: false, address: false }
+    };
 
     function sendAudio(mulawBuffer) {
       if (ws.readyState !== WebSocket.OPEN || !streamSid) return;
@@ -200,57 +226,56 @@ function setupOutboundStream(server) {
       isProcessing = true;
 
       try {
+        const positive = isPositive(transcript);
+        const negative = isNegative(transcript);
+
+        // Avancer l'état selon la réponse du client AVANT d'appeler le LLM
+        if (state.step === 1) {
+          if (positive) { state.step = 2; state.confirmed.interest = true; }
+          else if (negative) { state.step = 'cancel'; }
+        } else if (state.step === 2) {
+          if (positive) { state.step = 3; state.confirmed.address = true; }
+          // Si négatif ou correction adresse → rester step 2, LLM gère
+        } else if (state.step === 3) {
+          if (negative) state.step = 4;
+          // Si question → rester step 3, LLM répond librement
+        }
+
+        const promptFn = STEP_PROMPTS[state.step];
+        if (!promptFn) return; // étape invalide ou déjà terminée
+
+        const stepPrompt = promptFn(order);
+        logger.info('Outbound step', { callId, step: state.step, transcript: transcript.slice(0, 40) });
+
         await agent.streamOutboundResponse({
           callId,
-          productName: order?.productName,
-          price: order?.price,
-          address: order?.address,
-          deliveryDelay: order?.deliveryDelay,
+          stepPrompt,
           userMessage: transcript,
           history: conversationHistory,
-          currentStep,
           onChunk: async (speakText) => {
             if (!speakText) return;
-            let bytesThisTTS = 0;
             isTTSPlaying = true; ttsStartTime = Date.now();
             await synthesizeStream(speakText, mulawChunk => {
-              if (mulawChunk.length) { sendAudio(mulawChunk); bytesThisTTS += mulawChunk.length; }
+              if (mulawChunk.length) sendAudio(mulawChunk);
             }).catch(err => logger.error('TTS outbound chunk', { error: err.message }))
               .finally(() => { isTTSPlaying = false; });
-            lastTtsBytes = bytesThisTTS;
             conversationHistory.push({ role: 'user', content: transcript });
             conversationHistory.push({ role: 'assistant', content: speakText });
             if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
           },
-          // Met à jour l'étape et injecte un verrou système dans l'historique pour éviter le rebouclage
-          onStep: (step) => {
-            const prevStep = currentStep;
-            currentStep = step;
-            if (prevStep === 1 && step >= 2) {
-              conversationHistory.push({ role: 'system', content: 'الاهتمام تأكد. انتقل مباشرة للخطوة 2.' });
-            } else if (prevStep === 2 && step >= 3) {
-              conversationHistory.push({ role: 'system', content: 'العنوان تأكد. انتقل مباشرة للخطوة 3.' });
-            }
-          },
-          // Met à jour le statut de commande en DB si le LLM le demande
+          // Met à jour le statut de commande en DB
           onStatusUpdate: async (status) => {
-            const statusMap = {
-              'confirmé': 'adresse_confirmée',
-              'annulé': 'annulé_client',
-              'question': 'à_rappeler'
-            };
+            const statusMap = { 'confirmé': 'adresse_confirmée', 'annulé': 'annulé_client' };
             if (callId) await db.updateCallStatus(callId, statusMap[status] || status);
           },
-          // Raccroche après que tout l'audio TTS soit joué
+          // Délai fixe de 4s pour laisser le dernier TTS se terminer, puis raccroche
           onHangup: async () => {
-            // Attendre la durée estimée du dernier audio : mulaw 8kHz ≈ 800 bytes/100ms, minimum 3s
-            const delayMs = Math.max(3000, Math.ceil(lastTtsBytes / 800));
-            logger.info('Raccrochage automatique dans', { callId, delayMs, lastTtsBytes });
-            await new Promise(r => setTimeout(r, delayMs));
+            await new Promise(r => setTimeout(r, 4000));
             if (ws.readyState === WebSocket.OPEN && streamSid) {
               ws.send(JSON.stringify({ event: 'hangup', streamSid }));
             }
             if (ws.readyState !== WebSocket.CLOSED) ws.close();
+            logger.info('Raccrochage automatique', { callId });
           }
         });
       } catch (err) {
@@ -274,7 +299,7 @@ function setupOutboundStream(server) {
 
           dgSession = createDeepgramSession(
             (transcript, speechFinal) => {
-              // barge-in si le client parle pendant que Karim parle (après 1s minimum)
+              // barge-in si le client parle pendant le TTS (après 1s minimum)
               if (speechFinal && isTTSPlaying && (Date.now() - ttsStartTime) > 1000 &&
                   ws.readyState === WebSocket.OPEN && streamSid) {
                 ws.send(JSON.stringify({ event: 'clear', streamSid }));
@@ -287,7 +312,7 @@ function setupOutboundStream(server) {
 
           logger.info('Appel outbound démarré', { callId, callSidTwilio });
 
-          // Message d'accueil — lance le script de confirmation commande
+          // Message d'accueil — pose la question step 1 (intérêt pour le produit)
           const greeting = buildGreeting(order);
           isTTSPlaying = true; ttsStartTime = Date.now();
           synthesizeStream(greeting, sendAudio)
