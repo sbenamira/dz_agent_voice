@@ -52,6 +52,7 @@ function setupMediaStream(server) {
     let ttsDurations = [];
     let totalDurations = [];
     let isTTSPlaying = false;    // true uniquement pendant synthesizeStream (pas filler, pas LLM)
+    let ttsStartTime = 0;        // timestamp début TTS — délai minimum avant barge-in
     let isBargingIn = false;
     let activeTurnId = 0;
     const transcriptQueue = []; // transcripts reçus pendant traitement LLM — jamais perdus
@@ -110,7 +111,7 @@ function setupMediaStream(server) {
               buffer = '';
               if (phrase) {
                 const t0 = Date.now();
-                isTTSPlaying = true;
+                isTTSPlaying = true; ttsStartTime = Date.now();
                 await synthesizeStream(phrase, mulawChunk => {
                   if (mulawChunk.length) { sendAudio(mulawChunk); ttsOutputBytesTurn += mulawChunk.length; }
                 }).catch(err => logger.error('TTS chunk', { error: err.message }))
@@ -125,7 +126,7 @@ function setupMediaStream(server) {
 
         if (buffer.trim()) {
           const t0 = Date.now();
-          isTTSPlaying = true;
+          isTTSPlaying = true; ttsStartTime = Date.now();
           await synthesizeStream(buffer.trim(), mulawChunk => {
             if (mulawChunk.length) { sendAudio(mulawChunk); ttsOutputBytesTurn += mulawChunk.length; }
           }).catch(() => {}).finally(() => { isTTSPlaying = false; });
@@ -191,22 +192,24 @@ function setupMediaStream(server) {
           callStartTime = Date.now();
 
           dgSession = createDeepgramSession(
-            (transcript) => enqueueOrProcess(transcript),
-            (err) => logger.error('Deepgram erreur', { error: err.message, callId }),
-            // FIX 4 : barge-in — interim transcript pendant que Karim parle
-            (interimText) => {
-              if (isTTSPlaying && !isBargingIn && ws.readyState === WebSocket.OPEN && streamSid) {
+            (transcript, speechFinal) => {
+              // barge-in uniquement sur speech_final, après 1s de TTS minimum
+              if (speechFinal && isTTSPlaying && !isBargingIn &&
+                  ws.readyState === WebSocket.OPEN && streamSid &&
+                  (Date.now() - ttsStartTime) > 1000) {
                 isBargingIn = true;
                 ws.send(JSON.stringify({ event: 'clear', streamSid }));
-                logger.info('Barge-in détecté', { callId, text: interimText.slice(0, 30) });
+                logger.info('Barge-in détecté (speech_final)', { callId, text: transcript.slice(0, 30) });
               }
-            }
+              enqueueOrProcess(transcript);
+            },
+            (err) => logger.error('Deepgram erreur', { error: err.message, callId })
           );
 
           logger.info('Appel inbound démarré', { callId, twilioCallSid });
 
           const accueil = 'أهلاً وسهلاً سيدي، معك كريم من Konfident. كيفاش نقدر نعاونك اليوم؟';
-          isTTSPlaying = true;
+          isTTSPlaying = true; ttsStartTime = Date.now();
           synthesizeStream(accueil, sendAudio)
             .catch(err => logger.error('Accueil TTS', { error: err.message }))
             .finally(() => { isTTSPlaying = false; });

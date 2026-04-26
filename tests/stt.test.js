@@ -65,7 +65,7 @@ describe('stt service (Deepgram Nova-3)', () => {
       speech_final: true,
       channel: { alternatives: [{ transcript: 'واش عندك' }] }
     });
-    expect(onTranscript).toHaveBeenCalledWith('واش عندك');
+    expect(onTranscript).toHaveBeenCalledWith('واش عندك', true);
   });
 
   it("n'appelle pas onTranscript pour les transcripts non finaux", () => {

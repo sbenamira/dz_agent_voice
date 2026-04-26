@@ -22,7 +22,8 @@ function createDeepgramSession(onTranscript, onError, onInterim) {
       channels: 1,
       punctuate: true,
       interim_results: true,
-      endpointing: 150
+      endpointing: 500,
+      utterance_end_ms: 1500
     });
     activeConnection = connection;
 
@@ -78,7 +79,7 @@ function createDeepgramSession(onTranscript, onError, onInterim) {
 
           if (data.is_final && transcript.trim()) {
             logger.info('Transcript reçu', { transcript: transcript.slice(0, 50) });
-            onTranscript(transcript.trim());
+            onTranscript(transcript.trim(), data.speech_final);
           } else if (!data.is_final && transcript.trim() && onInterim) {
             onInterim(transcript.trim());
           }
