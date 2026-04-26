@@ -1,4 +1,5 @@
 const express = require('express');
+const WebSocket = require('ws');
 const multer = require('multer');
 const path = require('path');
 const config = require('../config');
@@ -6,9 +7,15 @@ const logger = require('../utils/logger');
 const db = require('../services/database');
 const campaign = require('../services/campaign');
 const { parseContactsExcel, validatePhoneNumber } = require('../utils/excel');
-const { initiateCall, getCallStatus } = require('../services/telephony');
+const { initiateCall, getCallStatus, generateTwiMLStream } = require('../services/telephony');
+const { createDeepgramSession } = require('../services/stt');
+const { synthesizeStream } = require('../services/tts');
+const agent = require('../services/agent');
 
 const router = express.Router();
+
+// Contexte des appels outbound en cours : CallSid Twilio → { callId, productName, price, address, deliveryDelay }
+const pendingOrders = new Map();
 
 const upload = multer({
   dest: 'uploads/',
@@ -76,26 +83,46 @@ router.post('/upload', upload.single('contacts'), async (req, res) => {
   }
 });
 
-// POST /outbound/call — Lance un appel unique vers un numéro donné (test ad hoc)
+// POST /outbound/call — Lance un appel de confirmation commande
 router.post('/call', async (req, res) => {
   try {
-    const { telephone, nom } = req.body;
+    const { telephone, nom, productName, price, address, deliveryDelay } = req.body;
     if (!telephone) return res.status(400).json({ error: 'telephone requis' });
     if (!validatePhoneNumber(telephone)) {
       return res.status(400).json({ error: 'Numéro invalide — format E.164 requis, ex: +21361234567' });
     }
 
     const baseUrl = config.server.baseUrl || `https://${req.headers.host}`;
-    const webhookUrl = `${baseUrl}/inbound`;
+    const webhookUrl = `${baseUrl}/outbound/webhook`;
 
     const call = await initiateCall(telephone, webhookUrl);
 
-    logger.info('Appel ad hoc initié', { telephone, nom: nom || '—', callSid: call.sid });
-    res.json({ success: true, callSid: call.sid, status: call.status });
+    // Créer l'enregistrement DB maintenant pour avoir le callId dès la réponse
+    const callRecord = await db.createCall({ campaign_id: null, contact_id: null, direction: 'outbound' });
+    pendingOrders.set(call.sid, {
+      callId: callRecord.id,
+      telephone,
+      nom: nom || '',
+      productName: productName || '',
+      price: price || '',
+      address: address || '',
+      deliveryDelay: deliveryDelay || ''
+    });
+
+    logger.info('Appel outbound initié', { telephone, callSid: call.sid, callId: callRecord.id });
+    res.json({ success: true, callSid: call.sid, callId: callRecord.id, status: call.status });
   } catch (err) {
     logger.error('POST /outbound/call', { error: err.message });
     res.status(500).json({ error: err.message });
   }
+});
+
+// POST /outbound/webhook — Webhook Twilio pour appels outbound sortants, retourne TwiML WebSocket
+router.post('/webhook', (req, res) => {
+  const callSid = req.body.CallSid || req.query.CallSid || 'unknown';
+  const streamUrl = `wss://${req.headers.host}/outbound-stream`;
+  const twiml = generateTwiMLStream(streamUrl, callSid);
+  res.type('text/xml').send(twiml);
 });
 
 // GET /outbound/status/:callSid — Statut Twilio en temps réel
@@ -128,4 +155,143 @@ router.get('/stats/:campaignId', async (req, res) => {
   }
 });
 
-module.exports = router;
+// Construit le message d'accueil à partir du contexte de commande
+function buildGreeting(order) {
+  if (!order || !order.productName) return 'سلام، أنا كريم من TCF Academy.';
+  return `سلام، أنا كريم من TCF Academy. راني نعيطلك على الطلبية تاعك. نأكدلك: ${order.productName} بـ ${order.price}. العنوان تاعك: ${order.address} — واش هذا مزبوط؟`;
+}
+
+// Attache le handler WebSocket /outbound-stream au serveur HTTP
+function setupOutboundStream(server) {
+  const wss = new WebSocket.Server({ noServer: true });
+
+  server.on('upgrade', (request, socket, head) => {
+    if (request.url === '/outbound-stream') {
+      wss.handleUpgrade(request, socket, head, ws => wss.emit('connection', ws, request));
+    }
+  });
+
+  wss.on('connection', ws => {
+    logger.info('WebSocket outbound connecté');
+
+    let callId = null;
+    let streamSid = null;
+    let dgSession = null;
+    let callStartTime = Date.now();
+    let conversationHistory = [];
+    let isProcessing = false;
+    let order = null;
+    let isTTSPlaying = false;
+    let ttsStartTime = 0;
+
+    function sendAudio(mulawBuffer) {
+      if (ws.readyState !== WebSocket.OPEN || !streamSid) return;
+      ws.send(JSON.stringify({
+        event: 'media',
+        streamSid,
+        media: { payload: mulawBuffer.toString('base64') }
+      }));
+    }
+
+    async function handleTranscript(transcript) {
+      if (!transcript.trim() || isProcessing) return;
+      isProcessing = true;
+
+      try {
+        await agent.streamOutboundResponse({
+          callId,
+          productName: order?.productName,
+          price: order?.price,
+          address: order?.address,
+          deliveryDelay: order?.deliveryDelay,
+          userMessage: transcript,
+          history: conversationHistory,
+          onChunk: async (speakText) => {
+            if (!speakText) return;
+            isTTSPlaying = true; ttsStartTime = Date.now();
+            await synthesizeStream(speakText, mulawChunk => {
+              if (mulawChunk.length) sendAudio(mulawChunk);
+            }).catch(err => logger.error('TTS outbound chunk', { error: err.message }))
+              .finally(() => { isTTSPlaying = false; });
+            conversationHistory.push({ role: 'user', content: transcript });
+            conversationHistory.push({ role: 'assistant', content: speakText });
+            if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
+          }
+        });
+      } catch (err) {
+        logger.error('handleTranscript outbound', { error: err.message, callId });
+      } finally {
+        isProcessing = false;
+      }
+    }
+
+    ws.on('message', async (data) => {
+      try {
+        const msg = JSON.parse(data);
+
+        if (msg.event === 'start') {
+          streamSid = msg.streamSid;
+          const callSidTwilio = msg.start?.callSid || msg.start?.customParameters?.callSid || 'unknown';
+
+          order = pendingOrders.get(callSidTwilio) || null;
+          callId = order?.callId || null;
+          callStartTime = Date.now();
+
+          dgSession = createDeepgramSession(
+            (transcript, speechFinal) => {
+              // barge-in si le client parle pendant que Karim parle (après 1s minimum)
+              if (speechFinal && isTTSPlaying && (Date.now() - ttsStartTime) > 1000 &&
+                  ws.readyState === WebSocket.OPEN && streamSid) {
+                ws.send(JSON.stringify({ event: 'clear', streamSid }));
+                isTTSPlaying = false;
+              }
+              handleTranscript(transcript).catch(() => {});
+            },
+            (err) => logger.error('Deepgram outbound erreur', { error: err.message, callId })
+          );
+
+          logger.info('Appel outbound démarré', { callId, callSidTwilio });
+
+          // Message d'accueil — lance le script de confirmation commande
+          const greeting = buildGreeting(order);
+          isTTSPlaying = true; ttsStartTime = Date.now();
+          synthesizeStream(greeting, sendAudio)
+            .catch(err => logger.error('Accueil outbound TTS', { error: err.message }))
+            .finally(() => { isTTSPlaying = false; });
+        }
+
+        if (msg.event === 'media' && dgSession) {
+          if (!isTTSPlaying) {
+            dgSession.send(Buffer.from(msg.media.payload, 'base64'));
+          }
+        }
+
+        if (msg.event === 'stop') {
+          if (dgSession) dgSession.close();
+          const dureeSecondes = Math.round((Date.now() - callStartTime) / 1000);
+          if (callId) {
+            await db.updateCall(callId, { statut: 'terminé', duree_secondes: dureeSecondes }).catch(() => {});
+          }
+          logger.info('Appel outbound terminé', { callId, dureeSecondes });
+        }
+      } catch (err) {
+        logger.error('WebSocket outbound message', { error: err.message });
+      }
+    });
+
+    ws.on('close', async () => {
+      if (dgSession) dgSession.close();
+      if (callId) {
+        const dur = Math.round((Date.now() - callStartTime) / 1000);
+        await db.updateCall(callId, { statut: 'terminé', duree_secondes: dur }).catch(() => {});
+      }
+      logger.info('WebSocket outbound déconnecté', { callId });
+    });
+
+    ws.on('error', err => logger.error('WebSocket outbound erreur', { error: err.message }));
+  });
+
+  logger.info('WebSocket /outbound-stream configuré');
+}
+
+module.exports = { router, setupOutboundStream };

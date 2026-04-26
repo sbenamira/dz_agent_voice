@@ -5,7 +5,7 @@ const express = require('express');
 const config = require('./config');
 const logger = require('./utils/logger');
 const { router: inboundRouter, setupMediaStream } = require('./routes/inbound');
-const outboundRouter = require('./routes/outbound');
+const { router: outboundRouter, setupOutboundStream } = require('./routes/outbound');
 
 const app = express();
 
@@ -60,6 +60,7 @@ app.use((err, req, res, next) => {
 const server = http.createServer(app);
 
 setupMediaStream(server);
+setupOutboundStream(server);
 
 server.listen(config.server.port, () => {
   logger.info('Serveur démarré', { port: config.server.port, env: process.env.NODE_ENV || 'development' });

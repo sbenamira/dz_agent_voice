@@ -142,4 +142,26 @@ router.get('/stats', async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// PATCH /api/calls/:id/status — met à jour le résultat d'un appel outbound
+router.patch('/calls/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) return res.status(400).json({ error: 'status requis' });
+    const data = await db.updateCall(req.params.id, { resultat: status });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/calls/:id/transcripts — transcripts d'un appel (bulles de conversation)
+router.get('/calls/:id/transcripts', async (req, res) => {
+  try {
+    const data = await db.getTranscripts(req.params.id);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

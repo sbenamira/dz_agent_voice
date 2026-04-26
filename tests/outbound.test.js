@@ -21,7 +21,23 @@ jest.mock('../src/services/database', () => ({
     { resultat: 'intéressé', duree_secondes: 45, created_at: '2026-04-24T11:00:00.000Z' },
     { resultat: 'refus', duree_secondes: 12, created_at: '2026-04-24T11:01:00.000Z' },
     { resultat: 'intéressé', duree_secondes: 67, created_at: '2026-04-24T11:02:00.000Z' }
-  ])
+  ]),
+  createCall: jest.fn().mockResolvedValue({ id: 'call-uuid' }),
+  updateCall: jest.fn().mockResolvedValue({ id: 'call-uuid' }),
+  insertTranscript: jest.fn().mockResolvedValue({ id: 'tr-uuid' })
+}));
+jest.mock('../src/services/stt', () => ({
+  createDeepgramSession: jest.fn().mockReturnValue({ send: jest.fn(), close: jest.fn() })
+}));
+jest.mock('../src/services/tts', () => ({
+  synthesize: jest.fn().mockResolvedValue(Buffer.from([0x7f])),
+  synthesizeStream: jest.fn().mockImplementation(async (text, onChunk) => { if (onChunk) onChunk(Buffer.from([0x7f])); })
+}));
+jest.mock('../src/services/agent', () => ({
+  streamResponse: jest.fn().mockResolvedValue(''),
+  streamOutboundResponse: jest.fn().mockResolvedValue(''),
+  isArabic: jest.fn().mockReturnValue(true),
+  selectPrompt: jest.fn().mockReturnValue('')
 }));
 jest.mock('../src/utils/excel', () => ({
   parseContactsExcel: jest.fn().mockReturnValue([
@@ -37,7 +53,7 @@ describe('outbound route', () => {
   let server;
 
   beforeAll((done) => {
-    const router = require('../src/routes/outbound');
+    const { router } = require('../src/routes/outbound');
     const app = express();
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
