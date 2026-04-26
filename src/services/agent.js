@@ -79,19 +79,21 @@ async function streamResponse({ callId, subjectId, userMessage, history = [], la
   }
 }
 
-// Appels outbound — confirmation de commande avec contexte produit injecté dans le prompt
-// onHangup() : appelé après TTS si le LLM décide de raccrocher (json.hangup === true)
-// onStatusUpdate(status) : appelé si le LLM émet un statut de commande (json.status)
-async function streamOutboundResponse({ callId, productName, price, address, deliveryDelay, userMessage, history = [], onChunk, onHangup, onStatusUpdate }) {
+// Appels outbound — confirmation de commande avec contexte produit et étape courante injectés
+// onHangup()          : appelé après TTS si le LLM décide de raccrocher (json.hangup === true)
+// onStatusUpdate(s)   : appelé si le LLM émet un statut de commande (json.status)
+// onStep(step)        : appelé après chaque réponse pour mettre à jour l'étape courante
+async function streamOutboundResponse({ callId, productName, price, address, deliveryDelay, userMessage, history = [], currentStep = 1, onChunk, onHangup, onStatusUpdate, onStep }) {
   try {
     await db.insertTranscript({ call_id: callId, role: 'client', message: userMessage, langue: 'ar' });
 
-    const REMINDER = '\n\nIMPORTANT: Réponds UNIQUEMENT avec le JSON. Raccrochage: {"speak":"...","display":"...","hangup":true,"status":"confirmé" ou "annulé"}. Sinon: {"speak":"...","display":"..."}';
+    const REMINDER = '\n\nIMPORTANT: Réponds UNIQUEMENT avec le JSON. Toujours inclure "step". Normal: {"speak":"...","display":"...","step":N}. Raccrochage: {"speak":"...","display":"...","step":4,"hangup":true,"status":"confirmé" ou "annulé"}.';
     const systemPrompt = promptOutbound
       .replace(/{productName}/g, productName || '')
       .replace(/{price}/g, price || '')
       .replace(/{address}/g, address || '')
       .replace(/{deliveryDelay}/g, deliveryDelay || '')
+      .replace(/{currentStep}/g, String(currentStep))
       + REMINDER;
 
     const messages = [
@@ -127,6 +129,7 @@ async function streamOutboundResponse({ callId, productName, price, address, del
     await db.insertTranscript({ call_id: callId, role: 'agent', message: speakText, langue: 'ar' });
     logger.info('Réponse outbound générée', { callId, chars: speakText.length, hangup: parsedJson?.hangup || false });
 
+    if (parsedJson?.step && onStep) onStep(parsedJson.step);
     if (parsedJson?.status && onStatusUpdate) await onStatusUpdate(parsedJson.status);
     if (parsedJson?.hangup === true && onHangup) await onHangup();
 

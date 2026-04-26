@@ -183,6 +183,8 @@ function setupOutboundStream(server) {
     let order = null;
     let isTTSPlaying = false;
     let ttsStartTime = 0;
+    let currentStep = 1;    // étape courante du script (1=intérêt, 2=adresse, 3=final, 4=fin)
+    let lastTtsBytes = 0;   // bytes audio du dernier TTS — sert à calculer le délai avant raccrochage
 
     function sendAudio(mulawBuffer) {
       if (ws.readyState !== WebSocket.OPEN || !streamSid) return;
@@ -206,17 +208,22 @@ function setupOutboundStream(server) {
           deliveryDelay: order?.deliveryDelay,
           userMessage: transcript,
           history: conversationHistory,
+          currentStep,
           onChunk: async (speakText) => {
             if (!speakText) return;
+            let bytesThisTTS = 0;
             isTTSPlaying = true; ttsStartTime = Date.now();
             await synthesizeStream(speakText, mulawChunk => {
-              if (mulawChunk.length) sendAudio(mulawChunk);
+              if (mulawChunk.length) { sendAudio(mulawChunk); bytesThisTTS += mulawChunk.length; }
             }).catch(err => logger.error('TTS outbound chunk', { error: err.message }))
               .finally(() => { isTTSPlaying = false; });
+            lastTtsBytes = bytesThisTTS;
             conversationHistory.push({ role: 'user', content: transcript });
             conversationHistory.push({ role: 'assistant', content: speakText });
             if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
           },
+          // Met à jour l'étape courante après chaque réponse LLM
+          onStep: (step) => { currentStep = step; },
           // Met à jour le statut de commande en DB si le LLM le demande
           onStatusUpdate: async (status) => {
             const statusMap = {
@@ -226,13 +233,16 @@ function setupOutboundStream(server) {
             };
             if (callId) await db.updateCallStatus(callId, statusMap[status] || status);
           },
-          // Raccroche automatiquement quand le script est terminé
+          // Raccroche après que tout l'audio TTS soit joué
           onHangup: async () => {
+            // Attendre la durée estimée du dernier audio : mulaw 8kHz ≈ 800 bytes/100ms, minimum 3s
+            const delayMs = Math.max(3000, Math.ceil(lastTtsBytes / 800));
+            logger.info('Raccrochage automatique dans', { callId, delayMs, lastTtsBytes });
+            await new Promise(r => setTimeout(r, delayMs));
             if (ws.readyState === WebSocket.OPEN && streamSid) {
               ws.send(JSON.stringify({ event: 'hangup', streamSid }));
             }
-            ws.close();
-            logger.info('Raccrochage automatique', { callId });
+            if (ws.readyState !== WebSocket.CLOSED) ws.close();
           }
         });
       } catch (err) {

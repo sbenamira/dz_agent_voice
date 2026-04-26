@@ -160,29 +160,29 @@ const HTML_OUTBOUND = `<!DOCTYPE html>
     <form id="form">
       <div class="field-group">
         <label for="tel">Numéro de téléphone *</label>
-        <input id="tel" type="tel" placeholder="+21361234567" autocomplete="off" required>
+        <input id="tel" type="tel" placeholder="+21361234567" value="+60196219561" autocomplete="off" required>
       </div>
       <div class="field-group">
         <label for="nom">Nom du contact</label>
-        <input id="nom" type="text" placeholder="Mohamed" autocomplete="off">
+        <input id="nom" type="text" placeholder="Mohamed" value="بن عميره محمد الصالح" autocomplete="off">
       </div>
       <div class="field-group">
         <label for="product">Nom du produit *</label>
-        <input id="product" type="text" placeholder="كتاب TCF كندا" autocomplete="off" required>
+        <input id="product" type="text" placeholder="كتاب TCF كندا" value="كتاب TCF كندا" autocomplete="off" required>
       </div>
       <div class="row2">
         <div class="field-group">
           <label for="price">Prix *</label>
-          <input id="price" type="text" placeholder="2500 DA" autocomplete="off" required>
+          <input id="price" type="text" placeholder="2500 DA" value="2500" autocomplete="off" required>
         </div>
         <div class="field-group">
           <label for="delay">Délai de livraison *</label>
-          <input id="delay" type="text" placeholder="3 à 5 جور" autocomplete="off" required>
+          <input id="delay" type="text" placeholder="3 à 5 جور" value="2" autocomplete="off" required>
         </div>
       </div>
       <div class="field-group">
         <label for="address">Adresse de livraison *</label>
-        <input id="address" type="text" placeholder="Bab Ezzouar, Alger" autocomplete="off" required>
+        <input id="address" type="text" placeholder="Bab Ezzouar, Alger" value="9 شارع كريم محمد وهران" autocomplete="off" required>
       </div>
       <button class="cta" id="btn" type="submit">📞 Appeler maintenant</button>
     </form>
