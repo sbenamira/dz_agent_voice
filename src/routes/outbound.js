@@ -1,3 +1,4 @@
+// redeploy-fix-state
 const express = require('express');
 const WebSocket = require('ws');
 const multer = require('multer');
@@ -161,8 +162,8 @@ router.get('/stats/:campaignId', async (req, res) => {
 // Le code gère l'état, le LLM reçoit une seule instruction précise par tour
 const STEP_PROMPTS = {
   1: (o) => `قول للعميل سلام وعرف روحك من TCF Academy واسأله: "مازال مهتم بـ ${o.productName} بـ ${o.price} دينار؟"`,
-  2: (o) => `العميل أكد اهتمامه. اسأله فقط على العنوان: "العنوان تاعك: ${o.address} — صحيح؟"`,
-  3: ()  => `العنوان تأكد. اسأل فقط: "واش عندك أي سؤال آخر؟"`,
+  2: (o) => `اسأل فقط: "العنوان تاعك: ${o.address} — صحيح؟" — لا تأكد، فقط اسأل`,
+  3: ()  => `اسأل فقط: "واش عندك أي سؤال آخر؟" — لا تأكد، فقط اسأل`,
   4: ()  => `قول: "شكراً على ثقتك، نتمنالك يوم مليح. مع السلامة." وأعد JSON مع "hangup":true,"status":"confirmé"`,
   cancel: () => `قول: "واخا، نلغيو الطلبية. شكراً." وأعد JSON مع "hangup":true,"status":"annulé"`
 };
