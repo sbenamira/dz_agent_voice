@@ -196,7 +196,7 @@ const STEP_PROMPTS = {
   2: (o) => `اسأل فقط: "العنوان تاعك: ${o.address} — صحيح؟" — لا تأكد، فقط اسأل`,
   3: ()  => `اسأل فقط: "واش عندك أي سؤال آخر؟" — لا تأكد، فقط اسأل`,
   4: ()  => `قول: "شكراً على ثقتك، نتمنالك يوم سعيد. مع السلامة." وأعد JSON مع "hangup":true,"status":"confirmé"`,
-  cancel: () => `قول: "واخا، نلغيو الطلبية. شكراً." وأعد JSON مع "hangup":true,"status":"annulé"`
+  cancel: () => `قول: "صحا، نلغيو الطلبية. شكراً على وقتك." وأعد JSON مع "hangup":true,"status":"annulé"`
 };
 
 // Détection d'une réponse positive (oui, accord)
