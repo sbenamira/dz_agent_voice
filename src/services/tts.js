@@ -83,9 +83,9 @@ async function synthesizeStream(text, onChunk) {
           stability: 0.55,
           similarity_boost: 0.85,
           style: 0.20,
-          use_speaker_boost: true,
-          speaking_rate: parseFloat(process.env.TTS_SPEED || '0.5')
+          use_speaker_boost: true
         },
+        speaking_rate: parseFloat(process.env.TTS_SPEED || '0.7'),
         output_format: 'ulaw_8000'
       })
     }
