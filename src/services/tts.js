@@ -43,8 +43,17 @@ function pipeMP3ToMulaw(responseBody, onChunk) {
   });
 }
 
+// Supprime les fillers sonores en début de texte avant envoi TTS
+function nettoyerTexte(text) {
+  return text
+    .replace(/^[\s،,]*(واه|آه|أوه|مم|أممم|واو|آآآ|اوه|آآ|اه)\s*[،,]?\s*/i, '')
+    .replace(/^[\s،,]*(وآه|ومم|وأوه)\s*[،,]?\s*/i, '')
+    .trim();
+}
+
 // ElevenLabs → onChunk(Buffer mulaw) pour chaque chunk reçu
 async function synthesizeStream(text, onChunk) {
+  text = nettoyerTexte(text);
   if (!text || !text.trim()) return;
 
   const key = cacheKey(text);
@@ -75,7 +84,7 @@ async function synthesizeStream(text, onChunk) {
           similarity_boost: 0.85,
           style: 0.20,
           use_speaker_boost: true,
-          speaking_rate: parseFloat(process.env.TTS_SPEED || '0.7')
+          speaking_rate: parseFloat(process.env.TTS_SPEED || '0.5')
         },
         output_format: 'ulaw_8000'
       })
