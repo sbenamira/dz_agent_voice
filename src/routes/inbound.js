@@ -11,7 +11,7 @@ fillers.initFillers().catch(err => logger.warn('Fillers init', { error: err.mess
 
 // Stocke le numéro appelant entre le webhook POST et le WebSocket start
 const pendingCallers = new Map();
-const { generateTwiMLStream } = require('../services/telephony');
+const { generateTwiMLStream, getTwilioClient } = require('../services/telephony');
 
 const router = express.Router();
 
@@ -56,6 +56,44 @@ function setupMediaStream(server) {
     let isBargingIn = false;
     let activeTurnId = 0;
     const transcriptQueue = []; // transcripts reçus pendant traitement LLM — jamais perdus
+    let twilioCallSid = null;   // SID Twilio de l'appel en cours — utilisé pour raccrocher
+    let silenceTimer = null;
+    let silenceCount = 0;
+
+    function resetSilenceTimer() {
+      if (silenceTimer) clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => onSilence().catch(err => logger.error('onSilence', { error: err.message })), 5000);
+    }
+
+    function cancelSilenceTimer() {
+      if (silenceTimer) clearTimeout(silenceTimer);
+      silenceTimer = null;
+    }
+
+    async function onSilence() {
+      silenceCount++;
+      if (silenceCount === 1) {
+        const texte = 'واش مازال راك معايا؟ نقدر نعاونك بحاجة أخرى؟';
+        isTTSPlaying = true; ttsStartTime = Date.now();
+        await synthesizeStream(texte, sendAudio).catch(err => logger.error('Relance TTS', { error: err.message }));
+        isTTSPlaying = false;
+        resetSilenceTimer();
+      } else {
+        const texte = 'روح بالسلامة، مرحبا بيك في أي وقت';
+        isTTSPlaying = true; ttsStartTime = Date.now();
+        await synthesizeStream(texte, sendAudio).catch(err => logger.error('Raccr. TTS', { error: err.message }));
+        isTTSPlaying = false;
+        await new Promise(r => setTimeout(r, 2000));
+        if (twilioCallSid && twilioCallSid !== 'unknown') {
+          try {
+            await getTwilioClient().calls(twilioCallSid).update({ status: 'completed' });
+            logger.info('Raccrochage après silence', { callId, twilioCallSid });
+          } catch (e) {
+            logger.error('Raccrochage failed', { error: e.message });
+          }
+        }
+      }
+    }
 
     function sendAudio(mulawBuffer) {
       if (ws.readyState !== WebSocket.OPEN || !streamSid) return;
@@ -80,6 +118,8 @@ function setupMediaStream(server) {
 
     async function handleTranscript(transcript) {
       if (!transcript.trim()) return;
+      cancelSilenceTimer();
+      silenceCount = 0;
       isProcessing = true;
       isBargingIn = false;
       isTTSPlaying = false;
@@ -115,7 +155,7 @@ function setupMediaStream(server) {
                 await synthesizeStream(phrase, mulawChunk => {
                   if (mulawChunk.length) { sendAudio(mulawChunk); ttsOutputBytesTurn += mulawChunk.length; }
                 }).catch(err => logger.error('TTS chunk', { error: err.message }))
-                  .finally(() => { isTTSPlaying = false; });
+                  .finally(() => { isTTSPlaying = false; resetSilenceTimer(); });
                 ttsDurationTurn += Date.now() - t0;
                 spokenParts.push(phrase);
               }
@@ -129,7 +169,7 @@ function setupMediaStream(server) {
           isTTSPlaying = true; ttsStartTime = Date.now();
           await synthesizeStream(buffer.trim(), mulawChunk => {
             if (mulawChunk.length) { sendAudio(mulawChunk); ttsOutputBytesTurn += mulawChunk.length; }
-          }).catch(() => {}).finally(() => { isTTSPlaying = false; });
+          }).catch(() => {}).finally(() => { isTTSPlaying = false; resetSilenceTimer(); });
           ttsDurationTurn += Date.now() - t0;
           spokenParts.push(buffer.trim());
         }
@@ -182,7 +222,7 @@ function setupMediaStream(server) {
 
         if (msg.event === 'start') {
           streamSid = msg.streamSid;
-          const twilioCallSid = msg.start?.callSid || msg.start?.customParameters?.callSid || 'unknown';
+          twilioCallSid = msg.start?.callSid || msg.start?.customParameters?.callSid || 'unknown';
 
           callerNumber = pendingCallers.get(twilioCallSid) || 'unknown';
           pendingCallers.delete(twilioCallSid);
@@ -212,7 +252,7 @@ function setupMediaStream(server) {
           isTTSPlaying = true; ttsStartTime = Date.now();
           synthesizeStream(accueil, sendAudio)
             .catch(err => logger.error('Accueil TTS', { error: err.message }))
-            .finally(() => { isTTSPlaying = false; });
+            .finally(() => { isTTSPlaying = false; resetSilenceTimer(); });
         }
 
         if (msg.event === 'media' && dgSession) {
@@ -222,6 +262,7 @@ function setupMediaStream(server) {
         }
 
         if (msg.event === 'stop') {
+          cancelSilenceTimer();
           if (dgSession) dgSession.close();
           const dureeSecondes = Math.round((Date.now() - callStartTime) / 1000);
           if (callId) {
@@ -243,6 +284,7 @@ function setupMediaStream(server) {
     });
 
     ws.on('close', async () => {
+      cancelSilenceTimer();
       if (dgSession) dgSession.close();
       if (callId) {
         const dur = Math.round((Date.now() - callStartTime) / 1000);
