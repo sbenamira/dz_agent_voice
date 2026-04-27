@@ -1,11 +1,8 @@
 const express = require('express');
-const multer = require('multer');
 const db = require('../services/database');
-const rag = require('../services/rag');
 const logger = require('../utils/logger');
 
 const router = express.Router();
-const upload = multer({ dest: 'uploads/', limits: { fileSize: 20 * 1024 * 1024 } });
 
 // ── Workspaces ────────────────────────────────────────────────────────────────
 
@@ -52,17 +49,6 @@ router.get('/subjects/:id', async (req, res) => {
 router.patch('/subjects/:id', async (req, res) => {
   try { res.json(await db.updateSubject(req.params.id, req.body)); }
   catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-router.post('/subjects/:id/documents', upload.single('document'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: 'Fichier requis (champ: document)' });
-    const result = await rag.uploadDocument(req.params.id, req.file.path, req.file.originalname, req.file.mimetype);
-    res.status(201).json(result);
-  } catch (err) {
-    logger.error('Upload document', { error: err.message });
-    res.status(500).json({ error: err.message });
-  }
 });
 
 // ── Campaigns ─────────────────────────────────────────────────────────────────
