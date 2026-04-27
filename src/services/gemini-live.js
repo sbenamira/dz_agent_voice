@@ -227,8 +227,8 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
     logger.error('[GEMINI] Erreur WebSocket', { error: err.message });
   });
 
-  geminiWs.on('close', () => {
-    if (!closed) logger.info('[GEMINI] WebSocket fermé');
+  geminiWs.on('close', (code, reason) => {
+    logger.info('[GEMINI] WebSocket fermé', { code, reason: reason.toString() });
     closed = true;
   });
 
