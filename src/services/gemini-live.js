@@ -1,7 +1,7 @@
 const WebSocket = require('ws');
 const logger = require('../utils/logger');
 
-const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent';
 
 // ── Conversion audio ──────────────────────────────────────────────────────────
 
