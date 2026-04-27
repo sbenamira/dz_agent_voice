@@ -117,9 +117,9 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
   function sendAutoTrigger() {
     logger.info('[GEMINI] autoTrigger envoyé');
     geminiWs.send(JSON.stringify({
-      clientContent: {
+      client_content: {
         turns: [{ role: 'user', parts: [{ text: 'Démarre la conversation.' }] }],
-        turnComplete: true
+        turn_complete: true
       }
     }));
   }
@@ -134,14 +134,14 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
     const setupMsg = {
       setup: {
         model: `models/${model}`,
-        generationConfig: {
-          responseModalities: ['AUDIO']
+        generation_config: {
+          response_modalities: ['AUDIO']
         },
-        systemInstruction: {
+        system_instruction: {
           parts: [{ text: systemPrompt }]
         },
         tools: functionDeclarations.length > 0
-          ? [{ functionDeclarations: functionDeclarations }]
+          ? [{ function_declarations: functionDeclarations }]
           : []
       }
     };
@@ -222,10 +222,10 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
     if (!setupDone || geminiWs.readyState !== WebSocket.OPEN) return;
     const pcm = mulawToPcm16k(mulawBuf);
     geminiWs.send(JSON.stringify({
-      realtimeInput: {
+      realtime_input: {
         audio: {
           data: pcm.toString('base64'),
-          mimeType: 'audio/pcm;rate=16000'
+          mime_type: 'audio/pcm;rate=16000'
         }
       }
     }));
