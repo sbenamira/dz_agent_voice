@@ -138,7 +138,7 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
           ? [{ function_declarations: functionDeclarations }]
           : [],
         realtime_input_config: {
-          automatic_activity_detection: { disabled: true }
+          automatic_activity_detection: { disabled: false }
         }
       }
     };
@@ -156,14 +156,12 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
         logger.info('[GEMINI] Setup complet');
         if (autoTrigger) {
           logger.info('[GEMINI] autoTrigger envoyé');
-          geminiWs.send(JSON.stringify({ realtime_input: { activity_start: {} } }));
-          const silence = Buffer.alloc(3200, 0);
           geminiWs.send(JSON.stringify({
-            realtime_input: {
-              audio: { data: silence.toString('base64'), mime_type: 'audio/pcm;rate=16000' }
+            client_content: {
+              turns: [{ role: 'user', parts: [{ text: 'Démarre la conversation.' }] }],
+              turn_complete: true
             }
           }));
-          geminiWs.send(JSON.stringify({ realtime_input: { activity_end: {} } }));
         }
         return;
       }
