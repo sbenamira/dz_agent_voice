@@ -108,7 +108,7 @@ const FUNCTION_SCHEMAS = {
  */
 function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCall, autoTrigger = false) {
   const apiKey = process.env.GOOGLE_API_KEY;
-  const model  = process.env.GEMINI_LIVE_MODEL || 'gemini-3.1-flash-live-preview';
+  const model  = process.env.GEMINI_LIVE_MODEL || 'gemini-2.0-flash-exp';
   const url    = `${GEMINI_WS_BASE}?key=${apiKey}`;
 
   const geminiWs = new WebSocket(url);
@@ -117,14 +117,12 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
   let emitter    = wsClient;       // remplaçable via rebind() quand Twilio connecte
   let fnHandler  = onFunctionCall; // remplaçable via rebind() pour injecter les closures WS
 
-  // Déclenche Gemini en envoyant 1s de silence PCM 16kHz via realtime_input
-  // (client_content texte est ignoré en mode AUDIO)
   function sendAutoTrigger() {
     logger.info('[GEMINI] autoTrigger envoyé');
-    const silence = Buffer.alloc(16000 * 2, 0); // 1s × 16000Hz × 2 octets
     geminiWs.send(JSON.stringify({
-      realtime_input: {
-        audio: { data: silence.toString('base64'), mime_type: 'audio/pcm;rate=16000' }
+      client_content: {
+        turns: [{ role: 'user', parts: [{ text: 'Démarre la conversation.' }] }],
+        turn_complete: true
       }
     }));
   }

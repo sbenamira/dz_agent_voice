@@ -41,11 +41,9 @@ async function getCallStatus(callSid) {
 }
 
 // Génère le TwiML pour connecter un appel au WebSocket media stream
-// Say joué immédiatement au décroché pendant l'initialisation Gemini (~2s)
 function generateTwiMLStream(streamUrl, callSid) {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const response = new VoiceResponse();
-  response.say({ voice: 'Polly.Zeina', language: 'ar-XA' }, 'مرحبا، لحظة من فضلك');
   const connect = response.connect();
   // inbound_track : reçoit uniquement la voix du caller, pas le TTS de Karim
   const stream = connect.stream({ url: streamUrl, track: 'inbound_track' });
