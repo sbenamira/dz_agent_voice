@@ -382,6 +382,32 @@ async function updateCallStatus(callId, status) {
   }
 }
 
+// Met à jour la langue détectée pendant l'appel
+async function updateCallLanguage(callId, language) {
+  try {
+    const { data, error } = await supabase
+      .from('calls').update({ language }).eq('id', callId).select().single();
+    if (error) throw error;
+    return data;
+  } catch (err) {
+    logger.error('updateCallLanguage', { error: err.message });
+    throw err;
+  }
+}
+
+// Met à jour le résultat final de l'appel (champ outcome v5)
+async function updateCallOutcome(callId, outcome) {
+  try {
+    const { data, error } = await supabase
+      .from('calls').update({ outcome }).eq('id', callId).select().single();
+    if (error) throw error;
+    return data;
+  } catch (err) {
+    logger.error('updateCallOutcome', { error: err.message });
+    throw err;
+  }
+}
+
 module.exports = {
   createWorkspace, getWorkspace, listWorkspaces,
   createSubject, getSubject, listSubjects, updateSubject,
@@ -391,6 +417,6 @@ module.exports = {
   createCall, updateCall, getCallStats,
   insertTranscript, getTranscripts,
   insertCallTurn, updateCallMonitoring, getCallsMonitoring, getCallDetail, getMonitoringStats,
-  updateCallStatus,
+  updateCallStatus, updateCallLanguage, updateCallOutcome,
   supabase
 };

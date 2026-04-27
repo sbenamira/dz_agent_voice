@@ -7,11 +7,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Agent vocal IA pour le marché algérien (darija algérienne + français). Twilio reçoit l'appel et ouvre un WebSocket audio mulaw 8kHz vers ce serveur, qui pipe STT → LLM → TTS en streaming.
 
 **Stack actuelle (2026-04) :**
+
+**Pipeline OUTBOUND (v5 — Gemini Live) :**
+- STT + LLM + TTS : **Gemini Live API** `gemini-3.1-flash-live-preview` — tout en un, WebSocket bidirectionnel
+- Conversion audio : mulaw 8kHz ↔ PCM 16/24kHz en pur JS (`src/services/gemini-live.js`)
+- Function calling : `confirm_order`, `cancel_order`, `request_human_callback` → `src/functions/outbound-functions.js`
+- Produit : chargé depuis table Supabase `products` via `loadProduct()` — 1 seul appel DB avant la session Gemini
+- Timers : silence décroché 5s, silence appel 10s (reset sur chaque audio client), timeout global 2mn
+
+**Pipeline INBOUND (legacy — Deepgram + Groq + ElevenLabs) :**
 - STT : Deepgram **nova-3**, `language=ar`, `encoding=mulaw`, `endpointing=500ms`, `utterance_end_ms=1500`
 - LLM : Groq `llama-3.3-70b-versatile` (~400ms) — répond en JSON `{"speak":"...","display":"..."}`
-- TTS : **ElevenLabs** `eleven_turbo_v2_5`, `output_format=ulaw_8000` (URL param + body), `speaking_rate` à la **racine** du JSON (pas dans `voice_settings` — ignoré sinon). ElevenLabs retourne parfois `audio/mpeg` → fallback ffmpeg MP3→mulaw automatique
-- Fillers audio : `src/fillers.js` — 3 clips mulaw pré-générés au démarrage, joués avant le LLM pour masquer la latence
+- TTS : **ElevenLabs** `eleven_turbo_v2_5`, `output_format=ulaw_8000`. `speaking_rate` à la **racine** du JSON (pas dans `voice_settings`). Fallback ffmpeg MP3→mulaw si `audio/mpeg`
+- Fillers audio : `src/fillers.js` — 3 clips mulaw pré-générés au démarrage
 - Barge-in : uniquement sur `speech_final=true` Deepgram + délai minimum 1s → event Twilio `clear`
+
+**Commun :**
 - DB : Supabase (PostgreSQL + pgvector)
 - Hébergement : Render.com (deploy auto sur push `main`), ffmpeg disponible
 
@@ -70,7 +81,11 @@ Fichier central : `src/routes/outbound.js` — exporte `{ router, setupOutboundS
 - Étape 2 → confirmée : **bypass LLM total** — phrase de délai construite en code (`التوصيل يكون خلال يومين إن شاء الله.`) jouée directement via `synthesizeStream`, puis step 3 enchaîné sans transcript client. Ne jamais repasser ce chemin par le LLM — il ignore ou réorganise le texte.
 - JSON `{hangup:true, status:"confirmé"|"annulé"}` déclenche `onStatusUpdate` puis `onHangup` dans `streamOutboundResponse`.
 
-**`pendingOrders`** (`outbound.js`) : Map module-level `CallSid → {callId, productName, price, address, deliveryDelay}` entre `POST /outbound/call` et l'ouverture du WebSocket `/outbound-stream`. Nettoyé via `.delete()` au `start` event. Utilisé aussi par `/outbound/webhook/status` pour le no-answer.
+**`pendingOrders`** (`outbound.js`) : Map module-level `CallSid → {callId, productId, price, address, deliveryDelay}` entre `POST /outbound/call` et l'ouverture du WebSocket `/outbound-stream`. Nettoyé via `.delete()` au `start` event. Utilisé aussi par `/outbound/webhook/status` pour le no-answer.
+
+**Session Gemini Live** (`services/gemini-live.js`) : `createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCall)` — ouvre WebSocket Gemini, bridge audio, émet `gemini-audio`/`gemini-turn-complete`/`gemini-interrupted` sur `wsClient`. Retourne `{ sendAudio, close }`. Conversion audio en pur JS : mulaw 8kHz ↔ PCM 16/24kHz. Ne jamais appeler `sendAudio` avant `setupComplete` — silencieusement ignoré sinon.
+
+**Produit** (`services/product.js`) : `loadProduct(productId)` — 1 seul appel Supabase. `buildOutboundPrompt(template, product, orderData)` — injecte les tokens `{shopName}`, `{productName}`, `{price}`, `{address}`, `{deliveryDelay}`, `{guarantee}`, `{faq_ar}`, `{faq_fr}`. `product.delivery_delay` est prioritaire sur `orderData.deliveryDelay`.
 
 **`pendingCallers`** (`inbound.js`) : Map `CallSid → numéro appelant` entre le POST webhook Twilio et l'ouverture du WebSocket `/media-stream`.
 
@@ -92,13 +107,16 @@ Fichier central : `src/routes/outbound.js` — exporte `{ router, setupOutboundS
 
 | Fichier | Rôle |
 |---|---|
-| `services/stt.js` | Session Deepgram WebSocket streaming, retourne `{send, close}` |
-| `services/tts.js` | `synthesizeStream(text, onChunk)` — filtre fillers + ElevenLabs + fallback ffmpeg + cache mulaw |
-| `services/agent.js` | `streamResponse()` inbound ; `streamOutboundResponse()` outbound (+ hangup/status callbacks) |
-| `services/database.js` | CRUD Supabase. `updateCallStatus(callId, status)` écrit le champ `resultat` de la table `calls` |
+| `services/gemini-live.js` | Bridge WebSocket Twilio ↔ Gemini Live, conversion audio mulaw↔PCM, function calling |
+| `services/product.js` | `loadProduct(id)` Supabase + `buildOutboundPrompt(template, product, order)` |
+| `services/stt.js` | Session Deepgram WebSocket streaming (inbound uniquement), retourne `{send, close}` |
+| `services/tts.js` | `synthesizeStream(text, onChunk)` ElevenLabs (inbound uniquement) + fallback ffmpeg + cache mulaw |
+| `services/agent.js` | `streamResponse()` inbound ; `streamOutboundResponse()` — LEGACY (non utilisé par outbound v5) |
+| `services/database.js` | CRUD Supabase. `updateCallStatus`, `updateCallLanguage`, `updateCallOutcome` sur table `calls` |
 | `services/rag.js` | Chunking + embeddings OpenAI + recherche pgvector (désactivé en prod) |
 | `services/campaign.js` | Campagnes outbound séquentielles |
 | `services/telephony.js` | Client Twilio singleton + `generateTwiMLStream()` + `initiateCall(to, url, extra)` |
+| `functions/outbound-functions.js` | Handlers function calling Gemini : confirm_order, cancel_order, request_human_callback |
 
 ### Routes
 
@@ -108,7 +126,7 @@ Fichier central : `src/routes/outbound.js` — exporte `{ router, setupOutboundS
 | `WS /media-stream` | Pipeline audio inbound temps réel |
 | `POST /outbound/call` | Appel ad-hoc : crée enregistrement DB + lance Twilio |
 | `POST /outbound/webhook` | Webhook Twilio → TwiML outbound |
-| `WS /outbound-stream` | Pipeline audio outbound (machine à états) |
+| `WS /outbound-stream` | Pipeline audio outbound (Gemini Live v5) |
 | `POST /outbound/webhook/status` | StatusCallback Twilio : no-answer/busy/failed → `aucune_réponse` en DB |
 | `GET /outbound/status/:callSid` | Statut Twilio en temps réel |
 | `POST /outbound/start` | Lance campagne outbound existante |
@@ -125,25 +143,35 @@ Fichier central : `src/routes/outbound.js` — exporte `{ router, setupOutboundS
 
 | Fichier | Utilisé par | Notes |
 |---|---|---|
-| `src/prompts/karim_darija.txt` | `streamResponse()` inbound | Contient infos produit TCF Canada (RAG désactivé) |
+| `src/prompts/karim_live_outbound.txt` | `setupOutboundStream()` outbound v5 | Tokens `{shopName}`, `{productName}`, `{price}`, `{address}`, `{deliveryDelay}`, `{guarantee}`, `{faq_ar}`, `{faq_fr}` |
+| `src/prompts/karim_darija.txt` | `streamResponse()` inbound | Contient infos produit (RAG désactivé) |
 | `src/prompts/karim_fr.txt` | `streamResponse()` si langue française | |
-| `src/prompts/karim_outbound.txt` | `streamOutboundResponse()` base fixe | Instructions d'étape injectées dynamiquement depuis `STEP_PROMPTS` dans outbound.js |
+| `src/prompts/karim_outbound.txt` | LEGACY — plus utilisé par outbound v5 | |
 
 Darija algérienne : تاع (pas ديال), درك (pas دابا), بزاف (pas برشا), مليح/لاباس (pas مزيان), صحيح (pas مزبوط).
 
 ### Base de données
 
-La table `call_turns` stocke chaque tour avec `llm_duration_ms`, `tts_duration_ms`, `total_latency_ms`. La table `calls` a un champ `resultat` mis à jour via `updateCallStatus` (valeurs : `adresse_confirmée`, `annulé_client`, `aucune_réponse`).
+La table `call_turns` stocke chaque tour avec `llm_duration_ms`, `tts_duration_ms`, `total_latency_ms`. La table `calls` a un champ `resultat` mis à jour via `updateCallStatus` (inbound) et les colonnes v5 `language`, `outcome`, `product_id` (outbound v5). Valeurs `outcome` : `confirmé`, `annulé_client`, `aucune_réponse`, `rappel_humain`, `timeout`. La table `products` stocke les données produit + FAQ (`shop_name`, `product_name`, `price`, `delivery_delay`, `guarantee`, `faq_ar`, `faq_fr`). Migration : `sql/migration_v5.sql`.
 
 ## VARIABLES D'ENVIRONNEMENT REQUISES
 
 ```
+# Outbound v5 (Gemini Live)
+GOOGLE_API_KEY
+GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview   # optionnel, défaut ci-contre
+
+# Inbound legacy (Deepgram + Groq + ElevenLabs)
 GROQ_API_KEY
-TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER
 DEEPGRAM_API_KEY
 ELEVENLABS_API_KEY
 ELEVENLABS_VOICE_ID
 OPENAI_API_KEY          # embeddings RAG uniquement (inutile si RAG désactivé)
+
+# Twilio (inbound + outbound)
+TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER
+
+# Base de données
 SUPABASE_URL / SUPABASE_ANON_KEY
 ```
 

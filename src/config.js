@@ -54,6 +54,10 @@ module.exports = {
     port: parseInt(process.env.PORT) || 3000,
     baseUrl: process.env.BASE_URL || ''
   },
+  gemini: {
+    apiKey: process.env.GOOGLE_API_KEY,
+    liveModel: process.env.GEMINI_LIVE_MODEL || 'gemini-3.1-flash-live-preview'
+  },
   calls: {
     maxConcurrent: parseInt(process.env.MAX_CONCURRENT_CALLS) || 10,
     delayMs: parseInt(process.env.CALL_DELAY_MS) || 2000

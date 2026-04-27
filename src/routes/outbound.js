@@ -1,21 +1,21 @@
-// redeploy-fix-state
 const express = require('express');
 const WebSocket = require('ws');
-const multer = require('multer');
+const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
 const config = require('../config');
 const logger = require('../utils/logger');
 const db = require('../services/database');
 const campaign = require('../services/campaign');
 const { parseContactsExcel, validatePhoneNumber } = require('../utils/excel');
 const { initiateCall, getCallStatus, generateTwiMLStream } = require('../services/telephony');
-const { createDeepgramSession } = require('../services/stt');
-const { synthesizeStream } = require('../services/tts');
-const agent = require('../services/agent');
+const { createGeminiLiveSession } = require('../services/gemini-live');
+const { loadProduct, buildOutboundPrompt } = require('../services/product');
+const outboundFunctions = require('../functions/outbound-functions');
 
 const router = express.Router();
 
-// Contexte des appels outbound en cours : CallSid Twilio → { callId, productName, price, address, deliveryDelay }
+// Contexte des appels outbound en cours : CallSid Twilio → { callId, productId, price, address, deliveryDelay }
 const pendingOrders = new Map();
 
 const upload = multer({
@@ -87,7 +87,7 @@ router.post('/upload', upload.single('contacts'), async (req, res) => {
 // POST /outbound/call — Lance un appel de confirmation commande
 router.post('/call', async (req, res) => {
   try {
-    const { telephone, nom, productName, price, address, deliveryDelay } = req.body;
+    const { telephone, nom, productId, price, address, deliveryDelay } = req.body;
     if (!telephone) return res.status(400).json({ error: 'telephone requis' });
     if (!validatePhoneNumber(telephone)) {
       return res.status(400).json({ error: 'Numéro invalide — format E.164 requis, ex: +21361234567' });
@@ -103,19 +103,18 @@ router.post('/call', async (req, res) => {
       statusCallbackEvent: ['no-answer', 'busy', 'failed', 'completed']
     });
 
-    // Créer l'enregistrement DB maintenant pour avoir le callId dès la réponse
     const callRecord = await db.createCall({ campaign_id: null, contact_id: null, direction: 'outbound' });
     pendingOrders.set(call.sid, {
       callId: callRecord.id,
       telephone,
       nom: nom || '',
-      productName: productName || '',
+      productId: productId || null,
       price: price || '',
       address: address || '',
       deliveryDelay: deliveryDelay || ''
     });
 
-    logger.info('Appel outbound initié', { telephone, callSid: call.sid, callId: callRecord.id });
+    logger.info('Appel outbound initié', { telephone, callSid: call.sid, callId: callRecord.id, productId });
     res.json({ success: true, callSid: call.sid, callId: callRecord.id, status: call.status });
   } catch (err) {
     logger.error('POST /outbound/call', { error: err.message });
@@ -131,11 +130,10 @@ router.post('/webhook/status', async (req, res) => {
       'no-answer': 'aucune_réponse',
       'busy':      'aucune_réponse',
       'failed':    'aucune_réponse',
-      'completed': null  // géré par onStatusUpdate WebSocket, on ne surécrit pas
+      'completed': null  // géré par la session Gemini, on ne surécrit pas
     };
     const status = statusMap[CallStatus];
     if (status) {
-      // callId disponible dans pendingOrders si le WebSocket n'a jamais été ouvert
       const order = pendingOrders.get(CallSid);
       if (order?.callId) {
         await db.updateCallStatus(order.callId, status);
@@ -146,7 +144,7 @@ router.post('/webhook/status', async (req, res) => {
   } catch (err) {
     logger.error('POST /outbound/webhook/status', { error: err.message });
   }
-  res.sendStatus(200); // Twilio attend toujours un 200
+  res.sendStatus(200);
 });
 
 // POST /outbound/webhook — Webhook Twilio pour appels outbound sortants, retourne TwiML WebSocket
@@ -187,35 +185,8 @@ router.get('/stats/:campaignId', async (req, res) => {
   }
 });
 
-// ── Machine à états ────────────────────────────────────────────────────────────
+// ── WebSocket /outbound-stream — pipeline Gemini Live ────────────────────────
 
-// Prompts injectés dynamiquement selon l'étape courante
-// Le code gère l'état, le LLM reçoit une seule instruction précise par tour
-const STEP_PROMPTS = {
-  1: (o) => `قول للعميل سلام وعرف روحك من TCF Academy واسأله: "مازال مهتم بـ ${o.productName} بـ ${o.price} دينار؟"`,
-  2: (o) => `اسأل فقط: "العنوان تاعك: ${o.address} — صحيح؟" — لا تأكد، فقط اسأل`,
-  3: ()  => `اسأل فقط: "واش عندك أي سؤال آخر؟" — لا تأكد، فقط اسأل`,
-  4: ()  => `قول: "شكراً على ثقتك، نتمنالك يوم سعيد. مع السلامة." وأعد JSON مع "hangup":true,"status":"confirmé"`,
-  cancel: () => `قول: "صحا، نلغيو الطلبية. شكراً على وقتك." وأعد JSON مع "hangup":true,"status":"annulé"`
-};
-
-// Détection d'une réponse positive (oui, accord)
-function isPositive(text) {
-  return /إيه|واه|واخا|نعم|صح|مليح|بلاش|أكيد/.test(text);
-}
-
-// Détection d'une réponse négative (non, refus)
-function isNegative(text) {
-  return /لا|ما نبيه|ما نبيش|ما نريد/.test(text);
-}
-
-// Message d'accueil — demande uniquement l'intérêt (étape 1)
-function buildGreeting(order) {
-  if (!order || !order.productName) return 'سلام، أنا كريم من TCF Academy.';
-  return `سلام، أنا كريم من TCF Academy. راني نعيطلك على الطلبية تاعك. مازال مهتم بـ ${order.productName} بـ ${order.price} دينار؟`;
-}
-
-// Attache le handler WebSocket /outbound-stream au serveur HTTP
 function setupOutboundStream(server) {
   const wss = new WebSocket.Server({ noServer: true });
 
@@ -228,160 +199,167 @@ function setupOutboundStream(server) {
   wss.on('connection', ws => {
     logger.info('WebSocket outbound connecté');
 
-    let callId = null;
-    let streamSid = null;
-    let dgSession = null;
+    let callId        = null;
+    let streamSid     = null;
+    let geminiSession = null;
     let callStartTime = Date.now();
-    let conversationHistory = [];
-    let isProcessing = false;
-    let order = null;
-    let isTTSPlaying = false;
-    let ttsStartTime = 0;
+    let order         = null;
 
-    // État de la machine — scopé par connexion, une instance par appel
-    const state = {
-      step: 1,
-      greetingDone: false,
-      confirmed: { interest: false, address: false }
-    };
+    // Timers de silence et timeout global
+    let timerSilencePickup = null;
+    let timerSilenceCall   = null;
+    let timerGlobal        = null;
 
-    function sendAudio(mulawBuffer) {
+    // Verrous : éviter double exécution de endCall et double update du statut
+    let ended                 = false;
+    let outcomeRegistered     = false;
+    let outcomeFunctionCalled = false;
+
+    function clearAllTimers() {
+      clearTimeout(timerSilencePickup);
+      clearTimeout(timerSilenceCall);
+      clearTimeout(timerGlobal);
+    }
+
+    // Réinitialise le timer de silence pendant l'appel (10s)
+    function resetSilenceDuringCall() {
+      clearTimeout(timerSilenceCall);
+      timerSilenceCall = setTimeout(() => {
+        logger.info('[OUTBOUND] Timeout silence appel', { callId });
+        endCall('aucune_réponse').catch(() => {});
+      }, 10000);
+    }
+
+    function sendAudioToTwilio(mulawBuf) {
       if (ws.readyState !== WebSocket.OPEN || !streamSid) return;
       ws.send(JSON.stringify({
         event: 'media',
         streamSid,
-        media: { payload: mulawBuffer.toString('base64') }
+        media: { payload: mulawBuf.toString('base64') }
       }));
     }
 
-    async function handleTranscript(transcript) {
-      if (!transcript.trim() || isProcessing) return;
-      isProcessing = true;
+    // Termine l'appel : met à jour DB, ferme Gemini et Twilio WS
+    async function endCall(outcome) {
+      if (ended) return;
+      ended = true;
+      clearAllTimers();
 
-      try {
-        const positive = isPositive(transcript);
-        const negative = isNegative(transcript);
-
-        // Callbacks réutilisables
-        const doTTS = async (speakText) => {
-          if (!speakText) return;
-          isTTSPlaying = true; ttsStartTime = Date.now();
-          await synthesizeStream(speakText, mulawChunk => {
-            if (mulawChunk.length) sendAudio(mulawChunk);
-          }).catch(err => logger.error('TTS outbound chunk', { error: err.message }))
-            .finally(() => { isTTSPlaying = false; });
-          conversationHistory.push({ role: 'user', content: transcript });
-          conversationHistory.push({ role: 'assistant', content: speakText });
-          if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
-        };
-        const doStatusUpdate = async (status) => {
-          const statusMap = { 'confirmé': 'adresse_confirmée', 'annulé': 'annulé_client' };
-          if (callId) await db.updateCallStatus(callId, statusMap[status] || status);
-        };
-        const doHangup = async () => {
-          await new Promise(r => setTimeout(r, 4000));
-          if (ws.readyState === WebSocket.OPEN && streamSid) {
-            ws.send(JSON.stringify({ event: 'hangup', streamSid }));
-          }
-          if (ws.readyState !== WebSocket.CLOSED) ws.close();
-          logger.info('Raccrochage automatique', { callId });
-        };
-
-        // Step 2 confirmé → annonce délai (phrase fixe, sans LLM) puis step 3
-        if (state.step === 2 && positive) {
-          state.confirmed.address = true;
-          logger.info('Outbound step', { callId, step: 'delay', transcript: transcript.slice(0, 40) });
-
-          const delaiMap = { '1': 'يوم واحد', '2': 'يومين', '3': 'ثلاثة أيام', '4': 'أربعة أيام', '5': 'خمسة أيام' };
-          const delaiText = delaiMap[String(order?.deliveryDelay)] || `${order?.deliveryDelay} أيام`;
-          await doTTS(`التوصيل يكون خلال ${delaiText} إن شاء الله.`);
-          await new Promise(r => setTimeout(r, 500));
-
-          state.step = 3;
-          logger.info('Outbound step', { callId, step: 3, auto: true });
-          await agent.streamOutboundResponse({
-            callId, stepPrompt: STEP_PROMPTS[3](), userMessage: transcript,
-            history: conversationHistory,
-            onChunk: doTTS, onStatusUpdate: doStatusUpdate, onHangup: doHangup
-          });
-          return;
-        }
-
-        // Transitions normales pour les autres étapes
-        if (state.step === 1) {
-          if (positive) { state.step = 2; state.confirmed.interest = true; }
-          else if (negative) { state.step = 'cancel'; }
-        } else if (state.step === 3) {
-          if (negative) state.step = 4;
-          // Si question → rester step 3, LLM répond librement
-        }
-
-        const promptFn = STEP_PROMPTS[state.step];
-        if (!promptFn) return; // étape invalide ou déjà terminée
-
-        const stepPrompt = promptFn(order);
-        logger.info('Outbound step', { callId, step: state.step, transcript: transcript.slice(0, 40) });
-
-        await agent.streamOutboundResponse({
-          callId, stepPrompt, userMessage: transcript, history: conversationHistory,
-          onChunk: doTTS, onStatusUpdate: doStatusUpdate, onHangup: doHangup
-        });
-      } catch (err) {
-        logger.error('handleTranscript outbound', { error: err.message, callId });
-      } finally {
-        isProcessing = false;
+      // Enregistrer le statut métier uniquement s'il n'a pas déjà été mis à jour
+      if (callId && outcome && !outcomeRegistered) {
+        outcomeRegistered = true;
+        await db.updateCallStatus(callId, outcome).catch(err =>
+          logger.error('endCall updateCallStatus', { error: err.message })
+        );
       }
+
+      if (geminiSession) geminiSession.close();
+
+      const dur = Math.round((Date.now() - callStartTime) / 1000);
+      if (callId) {
+        await db.updateCall(callId, { statut: 'terminé', duree_secondes: dur }).catch(() => {});
+      }
+
+      // Laisser le temps à Twilio de recevoir le dernier audio avant de raccrocher
+      await new Promise(r => setTimeout(r, 1500));
+
+      if (ws.readyState === WebSocket.OPEN && streamSid) {
+        ws.send(JSON.stringify({ event: 'hangup', streamSid }));
+      }
+      if (ws.readyState !== WebSocket.CLOSED) ws.close();
+
+      logger.info('Appel outbound terminé', { callId, outcome: outcome || '(via fonction)', dur });
     }
+
+    // Audio produit par Gemini → transmettre à Twilio
+    ws.on('gemini-audio', (mulawBuf) => {
+      clearTimeout(timerSilencePickup); // annuler le timer silence décroché dès que Gemini parle
+      sendAudioToTwilio(mulawBuf);
+    });
+
+    // Raccrocher après la phrase de clôture si une fonction terminale a été appelée
+    ws.on('gemini-turn-complete', () => {
+      if (outcomeFunctionCalled) {
+        endCall(null).catch(() => {}); // statut déjà enregistré par la fonction
+      }
+    });
 
     ws.on('message', async (data) => {
       try {
         const msg = JSON.parse(data);
 
         if (msg.event === 'start') {
-          streamSid = msg.streamSid;
-          const callSidTwilio = msg.start?.callSid || msg.start?.customParameters?.callSid || 'unknown';
+          streamSid     = msg.streamSid;
+          const callSid = msg.start?.callSid || msg.start?.customParameters?.callSid || 'unknown';
 
-          order = pendingOrders.get(callSidTwilio) || null;
-          pendingOrders.delete(callSidTwilio); // libérer l'entrée après récupération
+          order  = pendingOrders.get(callSid) || null;
+          pendingOrders.delete(callSid);
           callId = order?.callId || null;
           callStartTime = Date.now();
 
-          dgSession = createDeepgramSession(
-            (transcript, speechFinal) => {
-              // barge-in si le client parle pendant le TTS (après 1s minimum)
-              if (speechFinal && isTTSPlaying && (Date.now() - ttsStartTime) > 1000 &&
-                  ws.readyState === WebSocket.OPEN && streamSid) {
-                ws.send(JSON.stringify({ event: 'clear', streamSid }));
-                isTTSPlaying = false;
-              }
-              handleTranscript(transcript).catch(() => {});
-            },
-            (err) => logger.error('Deepgram outbound erreur', { error: err.message, callId })
+          logger.info('Appel outbound démarré', { callId, callSid });
+
+          // Charger les données produit depuis Supabase (1 seul appel DB)
+          let product = null;
+          if (order?.productId) {
+            try {
+              product = await loadProduct(order.productId);
+            } catch (err) {
+              logger.error('Erreur chargement produit', { error: err.message, productId: order.productId });
+            }
+          }
+
+          // Construire le prompt complet avec les données produit + commande injectées
+          const promptTemplate = fs.readFileSync(
+            path.join(__dirname, '../prompts/karim_live_outbound.txt'), 'utf8'
           );
+          const systemPrompt = product
+            ? buildOutboundPrompt(promptTemplate, product, order)
+            : promptTemplate;
 
-          logger.info('Appel outbound démarré', { callId, callSidTwilio });
+          // Callback déclenché quand Gemini appelle une fonction métier
+          const handleFunctionCall = async (name, args) => {
+            const handler = outboundFunctions[name];
+            if (!handler) return { success: false, error: 'Fonction inconnue' };
+            const result = await handler(args, callId);
+            outcomeRegistered     = true; // la fonction a déjà mis à jour le statut
+            outcomeFunctionCalled = true; // raccrocher après la phrase de clôture Gemini
+            return result;
+          };
 
-          // Message d'accueil — pose la question step 1 (intérêt pour le produit)
-          const greeting = buildGreeting(order);
-          isTTSPlaying = true; ttsStartTime = Date.now();
-          synthesizeStream(greeting, sendAudio)
-            .catch(err => logger.error('Accueil outbound TTS', { error: err.message }))
-            .finally(() => { isTTSPlaying = false; });
+          // Démarrer la session Gemini Live
+          geminiSession = createGeminiLiveSession(ws, systemPrompt, outboundFunctions, handleFunctionCall);
+
+          // Timer 1 : silence au décroché — 5s sans audio Gemini → aucune_réponse
+          timerSilencePickup = setTimeout(async () => {
+            logger.info('[OUTBOUND] Timeout silence décroché', { callId });
+            await endCall('aucune_réponse');
+          }, 5000);
+
+          // Timer 2 : silence pendant appel — 10s sans audio client → aucune_réponse
+          resetSilenceDuringCall();
+
+          // Timer 3 : timeout global 2 minutes
+          timerGlobal = setTimeout(async () => {
+            logger.info('[OUTBOUND] Timeout global 2mn', { callId });
+            await endCall('timeout');
+          }, 120000);
         }
 
-        if (msg.event === 'media' && dgSession) {
-          if (!isTTSPlaying) {
-            dgSession.send(Buffer.from(msg.media.payload, 'base64'));
-          }
+        if (msg.event === 'media' && geminiSession) {
+          const mulawBuf = Buffer.from(msg.media.payload, 'base64');
+          resetSilenceDuringCall(); // réinitialiser le timer silence sur chaque audio client
+          geminiSession.sendAudio(mulawBuf);
         }
 
         if (msg.event === 'stop') {
-          if (dgSession) dgSession.close();
-          const dureeSecondes = Math.round((Date.now() - callStartTime) / 1000);
+          clearAllTimers();
+          if (geminiSession) geminiSession.close();
+          const dur = Math.round((Date.now() - callStartTime) / 1000);
           if (callId) {
-            await db.updateCall(callId, { statut: 'terminé', duree_secondes: dureeSecondes }).catch(() => {});
+            await db.updateCall(callId, { statut: 'terminé', duree_secondes: dur }).catch(() => {});
           }
-          logger.info('Appel outbound terminé', { callId, dureeSecondes });
+          logger.info('Appel outbound stop event', { callId });
         }
       } catch (err) {
         logger.error('WebSocket outbound message', { error: err.message });
@@ -389,8 +367,9 @@ function setupOutboundStream(server) {
     });
 
     ws.on('close', async () => {
-      if (dgSession) dgSession.close();
-      if (callId) {
+      clearAllTimers();
+      if (geminiSession) geminiSession.close();
+      if (!ended && callId) {
         const dur = Math.round((Date.now() - callStartTime) / 1000);
         await db.updateCall(callId, { statut: 'terminé', duree_secondes: dur }).catch(() => {});
       }
