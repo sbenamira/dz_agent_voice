@@ -138,7 +138,7 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
           ? [{ function_declarations: functionDeclarations }]
           : [],
         realtime_input_config: {
-          automatic_activity_detection: { disabled: false }
+          automatic_activity_detection: { disabled: true }
         }
       }
     };
@@ -155,7 +155,7 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
         setupDone = true;
         logger.info('[GEMINI] Setup complet');
         if (autoTrigger) {
-          // Déclenche Gemini pour qu'il prenne la parole en premier
+          logger.info('[GEMINI] autoTrigger envoyé');
           geminiWs.send(JSON.stringify({
             client_content: {
               turns: [{ role: 'user', parts: [{ text: 'Démarre la conversation.' }] }],
