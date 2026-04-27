@@ -96,14 +96,16 @@ const FUNCTION_SCHEMAS = {
 /**
  * Ouvre une session Gemini Live et bridge l'audio avec le WebSocket Twilio.
  *
- * Émet sur wsClient :
+ * Émet sur l'emitter courant :
  *   'gemini-audio'         Buffer mulaw 8kHz produit par Gemini
  *   'gemini-turn-complete' Gemini a fini de parler
  *   'gemini-interrupted'   Le client a coupé la parole
  *
- * Retourne { sendAudio(mulawBuf), close() }
+ * Retourne { sendAudio(mulawBuf), close(), isReady(), rebind(newEmitter, newFnHandler, triggerNow) }
+ *
+ * rebind() permet de rebrancher la session pré-chauffée sur le vrai wsClient Twilio
+ * sans recréer la connexion WebSocket Gemini.
  */
-// autoTrigger=true : envoie un clientContent vide après setup pour que Gemini parle en premier (appels outbound)
 function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCall, autoTrigger = false) {
   const apiKey = process.env.GOOGLE_API_KEY;
   const model  = process.env.GEMINI_LIVE_MODEL || 'gemini-3.1-flash-live-preview';
@@ -112,6 +114,20 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
   const geminiWs = new WebSocket(url);
   let setupDone  = false;
   let closed     = false;
+  let emitter    = wsClient;       // remplaçable via rebind() quand Twilio connecte
+  let fnHandler  = onFunctionCall; // remplaçable via rebind() pour injecter les closures WS
+
+  // Déclenche Gemini en envoyant 1s de silence PCM 16kHz via realtime_input
+  // (client_content texte est ignoré en mode AUDIO)
+  function sendAutoTrigger() {
+    logger.info('[GEMINI] autoTrigger envoyé');
+    const silence = Buffer.alloc(16000 * 2, 0); // 1s × 16000Hz × 2 octets
+    geminiWs.send(JSON.stringify({
+      realtime_input: {
+        audio: { data: silence.toString('base64'), mime_type: 'audio/pcm;rate=16000' }
+      }
+    }));
+  }
 
   geminiWs.on('open', () => {
     logger.info('[GEMINI] Connexion établie', { model });
@@ -140,8 +156,8 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
         realtime_input_config: {
           automatic_activity_detection: {
             disabled: false,
-            silence_duration_ms: 2000,
-            prefix_padding_ms: 500
+            silence_duration_ms: 3000,
+            prefix_padding_ms: 300
           }
         }
       }
@@ -158,24 +174,7 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
       if (msg.setupComplete) {
         setupDone = true;
         logger.info('[GEMINI] Setup complet');
-        if (autoTrigger) {
-          logger.info('[GEMINI] autoTrigger envoyé');
-
-          // Gemini Live mode AUDIO ignore client_content texte.
-          // Il faut envoyer du vrai audio via realtime_input pour déclencher le VAD.
-          // On envoie 1 seconde de silence PCM 16kHz.
-          const sampleRate = 16000;
-          const durationSeconds = 1;
-          const silence = Buffer.alloc(sampleRate * durationSeconds * 2, 0);
-          geminiWs.send(JSON.stringify({
-            realtime_input: {
-              audio: {
-                data: silence.toString('base64'),
-                mime_type: 'audio/pcm;rate=16000'
-              }
-            }
-          }));
-        }
+        if (autoTrigger) sendAutoTrigger();
         return;
       }
 
@@ -186,7 +185,7 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
             const pcm   = Buffer.from(part.inlineData.data, 'base64');
             const mulaw = pcm24kToMulaw(pcm);
             if (mulaw.length > 0) {
-              wsClient.emit('gemini-audio', mulaw);
+              emitter.emit('gemini-audio', mulaw);
             }
           }
         }
@@ -195,13 +194,13 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
       // Fin de tour Gemini
       if (msg.serverContent?.turnComplete) {
         logger.info('[GEMINI] Tour terminé');
-        wsClient.emit('gemini-turn-complete');
+        emitter.emit('gemini-turn-complete');
       }
 
       // Interruption par le client
       if (msg.serverContent?.interrupted) {
         logger.info('[GEMINI] Interrompu par client');
-        wsClient.emit('gemini-interrupted');
+        emitter.emit('gemini-interrupted');
       }
 
       // Function calling : exécuter le handler et renvoyer le résultat à Gemini
@@ -210,7 +209,7 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
           logger.info('[GEMINI] Function call', { name: call.name });
           let result = { success: false };
           try {
-            result = await onFunctionCall(call.name, call.args || {});
+            result = await fnHandler(call.name, call.args || {});
           } catch (err) {
             logger.error('[GEMINI] Erreur function call', { name: call.name, error: err.message });
           }
@@ -256,7 +255,20 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
     }
   }
 
-  return { sendAudio, close };
+  // Rebrancher l'émetteur et le handler (pré-chauffe → vrai wsClient Twilio)
+  function rebind(newEmitter, newFnHandler, triggerNow = false) {
+    emitter = newEmitter;
+    if (newFnHandler) fnHandler = newFnHandler;
+    if (triggerNow) {
+      if (setupDone) {
+        sendAutoTrigger(); // setup déjà terminé : déclencher immédiatement
+      } else {
+        autoTrigger = true; // déclenchera au prochain setupComplete
+      }
+    }
+  }
+
+  return { sendAudio, close, isReady: () => setupDone, rebind };
 }
 
 module.exports = { createGeminiLiveSession, mulawToPcm16k, pcm24kToMulaw };

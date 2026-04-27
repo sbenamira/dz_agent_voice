@@ -44,7 +44,9 @@ jest.mock('../src/services/telephony', () => ({
 jest.mock('../src/services/gemini-live', () => ({
   createGeminiLiveSession: jest.fn().mockReturnValue({
     sendAudio: jest.fn(),
-    close:     jest.fn()
+    close:     jest.fn(),
+    rebind:    jest.fn(),
+    isReady:   jest.fn(() => false)
   })
 }));
 

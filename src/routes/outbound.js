@@ -1,5 +1,6 @@
 const express = require('express');
 const WebSocket = require('ws');
+const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
@@ -104,6 +105,26 @@ router.post('/call', async (req, res) => {
     });
 
     const callRecord = await db.createCall({ campaign_id: null, contact_id: null, direction: 'outbound' });
+
+    // Pré-chauffe Gemini pendant que Twilio compose le numéro (~5-10s disponibles)
+    const promptTemplate = fs.readFileSync(
+      path.join(__dirname, '../prompts/karim_live_outbound.txt'), 'utf8'
+    );
+    let warmProduct = null;
+    if (productId) {
+      try { warmProduct = await loadProduct(productId); }
+      catch (err) { logger.error('Erreur produit pré-chauffe', { error: err.message, productId }); }
+    }
+    const warmPrompt = warmProduct
+      ? buildOutboundPrompt(promptTemplate, warmProduct, { price, address, deliveryDelay })
+      : promptTemplate;
+    const fakeEmitter = new EventEmitter();
+    const warmSession = createGeminiLiveSession(
+      fakeEmitter, warmPrompt, outboundFunctions,
+      async () => ({ success: false, error: 'Session non encore connectée' }),
+      false // autoTrigger=false : déclenché manuellement quand Twilio connecte
+    );
+
     pendingOrders.set(call.sid, {
       callId: callRecord.id,
       telephone,
@@ -111,7 +132,10 @@ router.post('/call', async (req, res) => {
       productId: productId || null,
       price: price || '',
       address: address || '',
-      deliveryDelay: deliveryDelay || ''
+      deliveryDelay: deliveryDelay || '',
+      geminiSession: warmSession,
+      fakeEmitter,
+      systemPrompt: warmPrompt
     });
 
     logger.info('Appel outbound initié', { telephone, callSid: call.sid, callId: callRecord.id, productId });
@@ -136,6 +160,7 @@ router.post('/webhook/status', async (req, res) => {
     if (status) {
       const order = pendingOrders.get(CallSid);
       if (order?.callId) {
+        if (order.geminiSession) order.geminiSession.close(); // libérer la connexion pré-chauffée
         await db.updateCallStatus(order.callId, status);
         pendingOrders.delete(CallSid);
         logger.info('Statut no-answer enregistré', { CallSid, status, callId: order.callId });
@@ -305,36 +330,39 @@ function setupOutboundStream(server) {
           const silencePayload = Buffer.alloc(8000, 0x7f).toString('base64');
           ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: silencePayload } }));
 
-          // Charger les données produit depuis Supabase (1 seul appel DB)
-          let product = null;
-          if (order?.productId) {
-            try {
-              product = await loadProduct(order.productId);
-            } catch (err) {
-              logger.error('Erreur chargement produit', { error: err.message, productId: order.productId });
-            }
-          }
-
-          // Construire le prompt complet avec les données produit + commande injectées
-          const promptTemplate = fs.readFileSync(
-            path.join(__dirname, '../prompts/karim_live_outbound.txt'), 'utf8'
-          );
-          const systemPrompt = product
-            ? buildOutboundPrompt(promptTemplate, product, order)
-            : promptTemplate;
-
           // Callback déclenché quand Gemini appelle une fonction métier
           const handleFunctionCall = async (name, args) => {
             const handler = outboundFunctions[name];
             if (!handler) return { success: false, error: 'Fonction inconnue' };
             const result = await handler(args, callId);
-            outcomeRegistered     = true; // la fonction a déjà mis à jour le statut
-            outcomeFunctionCalled = true; // raccrocher après la phrase de clôture Gemini
+            outcomeRegistered     = true;
+            outcomeFunctionCalled = true;
             return result;
           };
 
-          // Démarrer la session Gemini Live
-          geminiSession = createGeminiLiveSession(ws, systemPrompt, outboundFunctions, handleFunctionCall, true);
+          if (order?.geminiSession) {
+            // Session pré-chauffée : rebrancher sur le vrai WS Twilio et déclencher
+            geminiSession = order.geminiSession;
+            geminiSession.rebind(ws, handleFunctionCall, true);
+            logger.info('[GEMINI] Session pré-chauffée rebranchée', { callId, ready: geminiSession.isReady() });
+          } else {
+            // Fallback sans pré-chauffe (ex: appels depuis campagne)
+            let product = null;
+            if (order?.productId) {
+              try {
+                product = await loadProduct(order.productId);
+              } catch (err) {
+                logger.error('Erreur chargement produit', { error: err.message, productId: order.productId });
+              }
+            }
+            const promptTemplate = fs.readFileSync(
+              path.join(__dirname, '../prompts/karim_live_outbound.txt'), 'utf8'
+            );
+            const systemPrompt = product
+              ? buildOutboundPrompt(promptTemplate, product, order)
+              : promptTemplate;
+            geminiSession = createGeminiLiveSession(ws, systemPrompt, outboundFunctions, handleFunctionCall, true);
+          }
 
           // Timer 1 : silence au décroché — 15s sans audio Gemini → aucune_réponse
           timerSilencePickup = setTimeout(async () => {
