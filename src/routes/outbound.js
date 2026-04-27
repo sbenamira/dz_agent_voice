@@ -278,9 +278,10 @@ function setupOutboundStream(server) {
     });
 
     // Raccrocher après la phrase de clôture si une fonction terminale a été appelée
+    // Délai 5s : laisser Twilio finir de streamer l'audio de clôture avant de raccrocher
     ws.on('gemini-turn-complete', () => {
       if (outcomeFunctionCalled) {
-        endCall(null).catch(() => {}); // statut déjà enregistré par la fonction
+        setTimeout(() => endCall(null).catch(() => {}), 5000);
       }
     });
 
