@@ -9,7 +9,8 @@
     "dev": "nodemon src/index.js",
     "test": "jest --forceExit --detectOpenHandles",
     "test:coverage": "jest --coverage --forceExit --detectOpenHandles",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "generate-greeting": "node scripts/generate-greeting.js"
   },
   "keywords": [
     "voice",

@@ -106,13 +106,6 @@ router.post('/call', async (req, res) => {
 
     const callRecord = await db.createCall({ campaign_id: null, contact_id: null, direction: 'outbound' });
 
-    // Charger le shop name pour la salutation Twilio Say
-    let shopName = '';
-    if (productId) {
-      try { shopName = (await loadProduct(productId))?.shop_name || ''; }
-      catch (_) {}
-    }
-
     pendingOrders.set(call.sid, {
       callId: callRecord.id,
       telephone,
@@ -120,8 +113,7 @@ router.post('/call', async (req, res) => {
       productId: productId || null,
       price: price || '',
       address: address || '',
-      deliveryDelay: deliveryDelay || '',
-      shopName
+      deliveryDelay: deliveryDelay || ''
     });
 
     logger.info('Appel outbound initié', { telephone, callSid: call.sid, callId: callRecord.id, productId });
@@ -161,8 +153,7 @@ router.post('/webhook/status', async (req, res) => {
 router.post('/webhook', (req, res) => {
   const callSid = req.body.CallSid || req.query.CallSid || 'unknown';
   const streamUrl = `wss://${req.headers.host}/outbound-stream`;
-  const shopName = pendingOrders.get(callSid)?.shopName || '';
-  const twiml = generateTwiMLStream(streamUrl, callSid, shopName);
+  const twiml = generateTwiMLStream(streamUrl, callSid);
   res.type('text/xml').send(twiml);
 });
 
@@ -318,10 +309,16 @@ function setupOutboundStream(server) {
 
           logger.info('Appel outbound démarré', { callId, callSid });
 
-          // Silence mulaw 1s envoyé immédiatement pour signaler la connexion
-          // pendant l'initialisation Gemini (évite le timeout silence décroché)
-          const silencePayload = Buffer.alloc(8000, 0x7f).toString('base64');
-          ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: silencePayload } }));
+          // Greeting audio (voix Charon, généré par npm run generate-greeting)
+          // Joué pendant l'initialisation Gemini — provider-agnostic
+          const greetingPath = path.join(__dirname, '../audio/greeting.ulaw');
+          const greetingPayload = fs.existsSync(greetingPath)
+            ? fs.readFileSync(greetingPath).toString('base64')
+            : Buffer.alloc(8000, 0x7f).toString('base64'); // 1s silence si fichier absent
+          if (!fs.existsSync(greetingPath)) {
+            logger.warn('[OUTBOUND] greeting.ulaw absent — lancer: npm run generate-greeting', { callId });
+          }
+          ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: greetingPayload } }));
 
           // Callback déclenché quand Gemini appelle une fonction métier
           const handleFunctionCall = async (name, args) => {
