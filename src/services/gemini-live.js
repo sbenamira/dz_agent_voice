@@ -1,7 +1,7 @@
 const WebSocket = require('ws');
 const logger = require('../utils/logger');
 
-const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent';
 
 // ── Conversion audio ──────────────────────────────────────────────────────────
 
@@ -105,7 +105,7 @@ const FUNCTION_SCHEMAS = {
  */
 function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCall, autoTrigger = false) {
   const apiKey = process.env.GOOGLE_API_KEY;
-  const model  = process.env.GEMINI_LIVE_MODEL || 'gemini-2.0-flash-live-001';
+  const model  = process.env.GEMINI_LIVE_MODEL || 'gemini-3.1-flash-live-preview';
   const url    = `${GEMINI_WS_BASE}?key=${apiKey}`;
 
   const geminiWs = new WebSocket(url);
@@ -115,11 +115,19 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
   let fnHandler  = onFunctionCall; // remplaçable via rebind()
 
   function sendAutoTrigger() {
-    logger.info('[GEMINI] autoTrigger: client_content turn_complete');
+    logger.info('[GEMINI] autoTrigger: tonalité 440Hz 50ms');
+    const samples = 800; // 50ms à 16kHz
+    const buf = Buffer.alloc(samples * 2);
+    for (let i = 0; i < samples; i++) {
+      const sample = Math.round(Math.sin(2 * Math.PI * 440 * i / 16000) * 2000);
+      buf.writeInt16LE(sample, i * 2);
+    }
     geminiWs.send(JSON.stringify({
-      client_content: {
-        turns: [],
-        turn_complete: true
+      realtime_input: {
+        audio: {
+          data: buf.toString('base64'),
+          mime_type: 'audio/pcm;rate=16000'
+        }
       }
     }));
   }

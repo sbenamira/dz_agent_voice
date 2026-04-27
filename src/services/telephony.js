@@ -42,9 +42,13 @@ async function getCallStatus(callSid) {
 
 // Génère le TwiML pour connecter un appel au WebSocket media stream
 // Say joue la salutation step 1 (voix masculine) pendant que Gemini s'initialise
-function generateTwiMLStream(streamUrl, callSid) {
+function generateTwiMLStream(streamUrl, callSid, shopName = '') {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const response = new VoiceResponse();
+  const greeting = shopName
+    ? `مرحبا ! أنا كريم من ${shopName}، تحب تحكي بالعربية أو بالفرنسية ؟`
+    : 'مرحبا ! أنا كريم، تحب تحكي بالعربية أو بالفرنسية ؟';
+  response.say({ voice: 'Google.ar-XA-Wavenet-B', language: 'ar-XA' }, greeting);
   const connect = response.connect();
   // inbound_track : reçoit uniquement la voix du caller, pas le TTS de Karim
   const stream = connect.stream({ url: streamUrl, track: 'inbound_track' });
