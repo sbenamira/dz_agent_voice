@@ -178,8 +178,8 @@ describe('createGeminiLiveSession', () => {
     session.sendAudio(Buffer.from([0xFF, 0x7F, 0x00]));
 
     const audioMsg = JSON.parse(mockGeminiWs.send.mock.calls[1][0]);
-    expect(audioMsg.realtimeInput.mediaChunks[0].mimeType).toBe('audio/pcm;rate=16000');
-    expect(typeof audioMsg.realtimeInput.mediaChunks[0].data).toBe('string');
+    expect(audioMsg.realtimeInput.audio.mimeType).toBe('audio/pcm;rate=16000');
+    expect(typeof audioMsg.realtimeInput.audio.data).toBe('string');
   });
 
   test('close() ferme le WebSocket Gemini', () => {
