@@ -135,26 +135,14 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
       setup: {
         model: `models/${model}`,
         generationConfig: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: 'Charon' }
-            }
-          }
+          responseModalities: ['AUDIO']
         },
         systemInstruction: {
           parts: [{ text: systemPrompt }]
         },
         tools: functionDeclarations.length > 0
-          ? [{ functionDeclarations }]
-          : [],
-        realtimeInputConfig: {
-          automaticActivityDetection: {
-            disabled: false,
-            silenceDurationMs: 3000,
-            prefixPaddingMs: 300
-          }
-        }
+          ? [{ functionDeclarations: functionDeclarations }]
+          : []
       }
     };
 
