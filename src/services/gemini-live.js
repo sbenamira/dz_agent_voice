@@ -115,14 +115,11 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
   let fnHandler  = onFunctionCall; // remplaçable via rebind()
 
   function sendAutoTrigger() {
-    logger.info('[GEMINI] autoTrigger: silence audio 1s pour déclencher VAD');
-    const silence = Buffer.alloc(16000 * 2, 0); // 1s PCM 16kHz silence
+    logger.info('[GEMINI] autoTrigger: déclenchement premier message');
     geminiWs.send(JSON.stringify({
-      realtime_input: {
-        audio: {
-          data: silence.toString('base64'),
-          mime_type: 'audio/pcm;rate=16000'
-        }
+      client_content: {
+        turns: [{ role: 'user', parts: [{ text: 'Démarre la conversation.' }] }],
+        turn_complete: true
       }
     }));
   }
