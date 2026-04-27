@@ -167,8 +167,8 @@ const HTML_OUTBOUND = `<!DOCTYPE html>
         <input id="nom" type="text" placeholder="Mohamed" value="بن عميره محمد الصالح" autocomplete="off">
       </div>
       <div class="field-group">
-        <label for="product">Nom du produit *</label>
-        <input id="product" type="text" placeholder="كتاب TCF كندا" value="كتاب TCF كندا" autocomplete="off" required>
+        <label for="product">Product ID *</label>
+        <input id="product" type="text" placeholder="uuid produit Supabase" value="c393bafd-c834-4e71-aaea-c2234607baf8" autocomplete="off" required>
       </div>
       <div class="row2">
         <div class="field-group">
@@ -334,7 +334,7 @@ const HTML_OUTBOUND = `<!DOCTYPE html>
         body: JSON.stringify({
           telephone: document.getElementById('tel').value.trim(),
           nom:       document.getElementById('nom').value.trim(),
-          productName: document.getElementById('product').value.trim(),
+          productId: document.getElementById('product').value.trim(),
           price:     document.getElementById('price').value.trim(),
           address:   document.getElementById('address').value.trim(),
           deliveryDelay: document.getElementById('delay').value.trim()
