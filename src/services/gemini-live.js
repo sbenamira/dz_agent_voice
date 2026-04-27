@@ -150,7 +150,13 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
         },
         tools: functionDeclarations.length > 0
           ? [{ function_declarations: functionDeclarations }]
-          : []
+          : [],
+        realtime_input_config: {
+          automatic_activity_detection: {
+            disabled: false,
+            silence_duration_ms: 300
+          }
+        }
       }
     };
 
