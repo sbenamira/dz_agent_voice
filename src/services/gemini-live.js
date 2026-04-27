@@ -102,20 +102,17 @@ const FUNCTION_SCHEMAS = {
  *   'gemini-interrupted'   Le client a coupé la parole
  *
  * Retourne { sendAudio(mulawBuf), close(), isReady(), rebind(newEmitter, newFnHandler, triggerNow) }
- *
- * rebind() permet de rebrancher la session pré-chauffée sur le vrai wsClient Twilio
- * sans recréer la connexion WebSocket Gemini.
  */
 function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCall, autoTrigger = false) {
   const apiKey = process.env.GOOGLE_API_KEY;
-  const model  = process.env.GEMINI_LIVE_MODEL || 'gemini-2.0-flash-exp';
+  const model  = process.env.GEMINI_LIVE_MODEL || 'gemini-3.1-flash-live-preview';
   const url    = `${GEMINI_WS_BASE}?key=${apiKey}`;
 
   const geminiWs = new WebSocket(url);
   let setupDone  = false;
   let closed     = false;
-  let emitter    = wsClient;       // remplaçable via rebind() quand Twilio connecte
-  let fnHandler  = onFunctionCall; // remplaçable via rebind() pour injecter les closures WS
+  let emitter    = wsClient;       // remplaçable via rebind()
+  let fnHandler  = onFunctionCall; // remplaçable via rebind()
 
   function sendAutoTrigger() {
     logger.info('[GEMINI] autoTrigger envoyé');
@@ -137,25 +134,25 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
     const setupMsg = {
       setup: {
         model: `models/${model}`,
-        generation_config: {
-          response_modalities: ['AUDIO'],
-          speech_config: {
-            voice_config: {
-              prebuilt_voice_config: { voice_name: 'Charon' }
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: 'Charon' }
             }
           }
         },
-        system_instruction: {
+        systemInstruction: {
           parts: [{ text: systemPrompt }]
         },
         tools: functionDeclarations.length > 0
-          ? [{ function_declarations: functionDeclarations }]
+          ? [{ functionDeclarations }]
           : [],
-        realtime_input_config: {
-          automatic_activity_detection: {
+        realtimeInputConfig: {
+          automaticActivityDetection: {
             disabled: false,
-            silence_duration_ms: 3000,
-            prefix_padding_ms: 300
+            silenceDurationMs: 3000,
+            prefixPaddingMs: 300
           }
         }
       }
@@ -237,10 +234,10 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
     if (!setupDone || geminiWs.readyState !== WebSocket.OPEN) return;
     const pcm = mulawToPcm16k(mulawBuf);
     geminiWs.send(JSON.stringify({
-      realtime_input: {
+      realtimeInput: {
         audio: {
           data: pcm.toString('base64'),
-          mime_type: 'audio/pcm;rate=16000'
+          mimeType: 'audio/pcm;rate=16000'
         }
       }
     }));
@@ -259,7 +256,7 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
     if (newFnHandler) fnHandler = newFnHandler;
     if (triggerNow) {
       if (setupDone) {
-        sendAutoTrigger(); // setup déjà terminé : déclencher immédiatement
+        sendAutoTrigger();
       } else {
         autoTrigger = true; // déclenchera au prochain setupComplete
       }
