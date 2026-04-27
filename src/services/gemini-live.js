@@ -157,9 +157,9 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
         if (autoTrigger) {
           // Déclenche Gemini pour qu'il prenne la parole en premier
           geminiWs.send(JSON.stringify({
-            clientContent: {
-              turns: [{ role: 'user', parts: [{ text: '' }] }],
-              turnComplete: true
+            client_content: {
+              turns: [{ role: 'user', parts: [{ text: 'Démarre la conversation.' }] }],
+              turn_complete: true
             }
           }));
         }
