@@ -115,12 +115,17 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
   let fnHandler  = onFunctionCall; // remplaçable via rebind()
 
   function sendAutoTrigger() {
-    logger.info('[GEMINI] autoTrigger: silence PCM 1s');
-    const silence = Buffer.alloc(16000 * 2, 0);
+    logger.info('[GEMINI] autoTrigger: tonalité 440Hz 50ms');
+    const samples = 800; // 50ms à 16kHz
+    const buf = Buffer.alloc(samples * 2);
+    for (let i = 0; i < samples; i++) {
+      const sample = Math.round(Math.sin(2 * Math.PI * 440 * i / 16000) * 2000);
+      buf.writeInt16LE(sample, i * 2);
+    }
     geminiWs.send(JSON.stringify({
       realtime_input: {
         audio: {
-          data: silence.toString('base64'),
+          data: buf.toString('base64'),
           mime_type: 'audio/pcm;rate=16000'
         }
       }
