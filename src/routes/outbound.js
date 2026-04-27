@@ -328,7 +328,7 @@ function setupOutboundStream(server) {
           };
 
           // Démarrer la session Gemini Live
-          geminiSession = createGeminiLiveSession(ws, systemPrompt, outboundFunctions, handleFunctionCall);
+          geminiSession = createGeminiLiveSession(ws, systemPrompt, outboundFunctions, handleFunctionCall, true);
 
           // Timer 1 : silence au décroché — 5s sans audio Gemini → aucune_réponse
           timerSilencePickup = setTimeout(async () => {

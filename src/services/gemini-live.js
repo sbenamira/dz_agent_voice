@@ -103,7 +103,8 @@ const FUNCTION_SCHEMAS = {
  *
  * Retourne { sendAudio(mulawBuf), close() }
  */
-function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCall) {
+// autoTrigger=true : envoie un clientContent vide après setup pour que Gemini parle en premier (appels outbound)
+function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCall, autoTrigger = false) {
   const apiKey = process.env.GOOGLE_API_KEY;
   const model  = process.env.GEMINI_LIVE_MODEL || 'gemini-3.1-flash-live-preview';
   const url    = `${GEMINI_WS_BASE}?key=${apiKey}`;
@@ -153,6 +154,15 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
       if (msg.setupComplete) {
         setupDone = true;
         logger.info('[GEMINI] Setup complet');
+        if (autoTrigger) {
+          // Déclenche Gemini pour qu'il prenne la parole en premier
+          geminiWs.send(JSON.stringify({
+            clientContent: {
+              turns: [{ role: 'user', parts: [{ text: '' }] }],
+              turnComplete: true
+            }
+          }));
+        }
         return;
       }
 
