@@ -105,6 +105,14 @@ router.post('/call', async (req, res) => {
     });
 
     const callRecord = await db.createCall({ campaign_id: null, contact_id: null, direction: 'outbound' });
+
+    // Charger le shop name pour la salutation Twilio Say
+    let shopName = '';
+    if (productId) {
+      try { shopName = (await loadProduct(productId))?.shop_name || ''; }
+      catch (_) {}
+    }
+
     pendingOrders.set(call.sid, {
       callId: callRecord.id,
       telephone,
@@ -112,7 +120,8 @@ router.post('/call', async (req, res) => {
       productId: productId || null,
       price: price || '',
       address: address || '',
-      deliveryDelay: deliveryDelay || ''
+      deliveryDelay: deliveryDelay || '',
+      shopName
     });
 
     logger.info('Appel outbound initié', { telephone, callSid: call.sid, callId: callRecord.id, productId });
@@ -152,7 +161,8 @@ router.post('/webhook/status', async (req, res) => {
 router.post('/webhook', (req, res) => {
   const callSid = req.body.CallSid || req.query.CallSid || 'unknown';
   const streamUrl = `wss://${req.headers.host}/outbound-stream`;
-  const twiml = generateTwiMLStream(streamUrl, callSid);
+  const shopName = pendingOrders.get(callSid)?.shopName || '';
+  const twiml = generateTwiMLStream(streamUrl, callSid, shopName);
   res.type('text/xml').send(twiml);
 });
 
