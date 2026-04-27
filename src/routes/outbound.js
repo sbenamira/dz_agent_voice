@@ -286,6 +286,13 @@ function setupOutboundStream(server) {
       }
     });
 
+    // Barge-in : Gemini interrompu par le client → vider le buffer audio Twilio
+    ws.on('gemini-interrupted', () => {
+      if (ws.readyState === WebSocket.OPEN && streamSid) {
+        ws.send(JSON.stringify({ event: 'clear', streamSid }));
+      }
+    });
+
     ws.on('message', async (data) => {
       try {
         const msg = JSON.parse(data);
