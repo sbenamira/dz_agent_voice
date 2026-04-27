@@ -156,10 +156,19 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
         logger.info('[GEMINI] Setup complet');
         if (autoTrigger) {
           logger.info('[GEMINI] autoTrigger envoyé');
+
+          // Gemini Live mode AUDIO ignore client_content texte.
+          // Il faut envoyer du vrai audio via realtime_input pour déclencher le VAD.
+          // On envoie 1 seconde de silence PCM 16kHz.
+          const sampleRate = 16000;
+          const durationSeconds = 1;
+          const silence = Buffer.alloc(sampleRate * durationSeconds * 2, 0);
           geminiWs.send(JSON.stringify({
-            client_content: {
-              turns: [{ role: 'user', parts: [{ text: 'Démarre la conversation.' }] }],
-              turn_complete: true
+            realtime_input: {
+              audio: {
+                data: silence.toString('base64'),
+                mime_type: 'audio/pcm;rate=16000'
+              }
             }
           }));
         }
