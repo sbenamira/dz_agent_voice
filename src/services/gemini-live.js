@@ -120,9 +120,9 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
   function sendAutoTrigger() {
     logger.info('[GEMINI] autoTrigger envoyé');
     geminiWs.send(JSON.stringify({
-      client_content: {
+      clientContent: {
         turns: [{ role: 'user', parts: [{ text: 'Démarre la conversation.' }] }],
-        turn_complete: true
+        turnComplete: true
       }
     }));
   }
