@@ -45,7 +45,7 @@ async function getCallStatus(callSid) {
 function generateTwiMLStream(streamUrl, callSid) {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const response = new VoiceResponse();
-  response.say({ voice: 'Polly.Zeina', language: 'ar-XA' },
+  response.say({ voice: 'Google.ar-XA-Wavenet-B', language: 'ar-XA' },
     'مرحبا، أنا كريم. تحب نحكي بالعربي ولا بالفرانسيه؟');
   const connect = response.connect();
   // inbound_track : reçoit uniquement la voix du caller, pas le TTS de Karim
