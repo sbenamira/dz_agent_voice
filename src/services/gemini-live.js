@@ -150,7 +150,7 @@ function createGeminiLiveSession(wsClient, systemPrompt, functions, onFunctionCa
           : [],
         realtime_input_config: {
           automatic_activity_detection: {
-            disabled: true
+            disabled: false
           }
         }
       }
