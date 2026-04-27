@@ -50,7 +50,11 @@ DÉROULEMENT
   Français : "Vous confirmez ?"
 
 Étape 4 — Selon réponse
-  OUI → confirm_order() → phrase clôture → fin
+  OUI → demander si le client a des questions :
+          Arabe : "واش عندك أي سؤال على الطلبية ؟"
+          Français : "Avez-vous des questions sur votre commande ?"
+        → répondre si oui (FAQ) → confirm_order() → phrase clôture → fin
+        → si non → confirm_order() → phrase clôture → fin
   NON → identifier raison → convaincre une fois
       → si toujours NON → cancel_order() → fin
   HÉSITANT → voir objections
