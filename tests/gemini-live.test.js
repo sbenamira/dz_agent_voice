@@ -98,8 +98,8 @@ describe('createGeminiLiveSession', () => {
     const msg = JSON.parse(mockGeminiWs.send.mock.calls[0][0]);
     expect(msg.setup).toBeDefined();
     expect(msg.setup.model).toContain('gemini');
-    expect(msg.setup.system_instruction.parts[0].text).toBe('Prompt système');
-    expect(msg.setup.tools[0].function_declarations).toHaveLength(2);
+    expect(msg.setup.systemInstruction.parts[0].text).toBe('Prompt système');
+    expect(msg.setup.tools[0].functionDeclarations).toHaveLength(2);
   });
 
   test('émet gemini-audio quand Gemini produit de l\'audio', () => {
@@ -178,8 +178,8 @@ describe('createGeminiLiveSession', () => {
     session.sendAudio(Buffer.from([0xFF, 0x7F, 0x00]));
 
     const audioMsg = JSON.parse(mockGeminiWs.send.mock.calls[1][0]);
-    expect(audioMsg.realtime_input.audio.mime_type).toBe('audio/pcm;rate=16000');
-    expect(typeof audioMsg.realtime_input.audio.data).toBe('string');
+    expect(audioMsg.realtimeInput.audio.mimeType).toBe('audio/pcm;rate=16000');
+    expect(typeof audioMsg.realtimeInput.audio.data).toBe('string');
   });
 
   test('close() ferme le WebSocket Gemini', () => {
