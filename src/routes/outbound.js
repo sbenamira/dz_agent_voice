@@ -278,10 +278,10 @@ function setupOutboundStream(server) {
     });
 
     // Raccrocher après la phrase de clôture si une fonction terminale a été appelée
-    // Délai 5s : laisser Twilio finir de streamer l'audio de clôture avant de raccrocher
+    // Délai 2s : laisser Twilio finir de streamer l'audio de clôture avant de raccrocher
     ws.on('gemini-turn-complete', () => {
       if (outcomeFunctionCalled) {
-        setTimeout(() => endCall(null).catch(() => {}), 5000);
+        setTimeout(() => endCall(null).catch(() => {}), 2000);
       }
     });
 
@@ -331,11 +331,11 @@ function setupOutboundStream(server) {
           // Démarrer la session Gemini Live
           geminiSession = createGeminiLiveSession(ws, systemPrompt, outboundFunctions, handleFunctionCall, true);
 
-          // Timer 1 : silence au décroché — 5s sans audio Gemini → aucune_réponse
+          // Timer 1 : silence au décroché — 15s sans audio Gemini → aucune_réponse
           timerSilencePickup = setTimeout(async () => {
             logger.info('[OUTBOUND] Timeout silence décroché', { callId });
             await endCall('aucune_réponse');
-          }, 5000);
+          }, 15000);
 
           // Timer 2 : silence pendant appel — 10s sans audio client → aucune_réponse
           resetSilenceDuringCall();
