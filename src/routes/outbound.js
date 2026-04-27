@@ -300,6 +300,11 @@ function setupOutboundStream(server) {
 
           logger.info('Appel outbound démarré', { callId, callSid });
 
+          // Silence mulaw 1s envoyé immédiatement pour signaler la connexion
+          // pendant l'initialisation Gemini (évite le timeout silence décroché)
+          const silencePayload = Buffer.alloc(8000, 0x7f).toString('base64');
+          ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: silencePayload } }));
+
           // Charger les données produit depuis Supabase (1 seul appel DB)
           let product = null;
           if (order?.productId) {
