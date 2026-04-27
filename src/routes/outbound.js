@@ -338,7 +338,7 @@ function setupOutboundStream(server) {
           const systemPrompt = product
             ? buildOutboundPrompt(promptTemplate, product, order)
             : promptTemplate;
-          geminiSession = createGeminiLiveSession(ws, systemPrompt, outboundFunctions, handleFunctionCall, true);
+          geminiSession = createGeminiLiveSession(ws, systemPrompt, outboundFunctions, handleFunctionCall, false);
 
           // Timer 1 : silence au décroché — 15s sans audio Gemini → aucune_réponse
           timerSilencePickup = setTimeout(async () => {
